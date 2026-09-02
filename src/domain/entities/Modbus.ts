@@ -20,3 +20,19 @@ export interface ModbusConnectRequest {
 export interface ModbusDisconnectRequest {
   clientId: number;
 }
+
+// -- FC03: Read Holding Registers --
+export interface ModbusReadRequest {
+  clientId: number;
+  slaveId: number;
+  startAddress: number;
+  count: number;
+}
+
+export interface ModbusReadResult {
+  clientId: number;
+  slaveId: number;
+  startAddress: number;
+  registers: number[] | null;
+  errorMessage: string | null;
+}

@@ -7,6 +7,7 @@ import type { SetPasswordUseCase } from '../../domain/usecases/SetPasswordUseCas
 import type { ModbusRepository } from '../../domain/repositories/ModbusRepository';
 import type { ConnectModbusUseCase } from '../../domain/usecases/ConnectModbusUseCase';
 import type { DisconnectModbusUseCase } from '../../domain/usecases/DisconnectModbusUseCase';
+import type { ReadHoldingRegistersUseCase } from '../../domain/usecases/ReadHoldingRegistersUseCase';
 
 /**
  * Shared infrastructure dependencies available to all features.
@@ -34,6 +35,7 @@ export interface ModbusDependencies {
   modbusRepository: ModbusRepository;
   connectModbusUseCase: ConnectModbusUseCase;
   disconnectModbusUseCase: DisconnectModbusUseCase;
+  readHoldingRegistersUseCase: ReadHoldingRegistersUseCase;
 }
 
 /**

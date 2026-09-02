@@ -4,6 +4,8 @@ import type {
   ModbusConnection,
   ModbusConnectRequest,
   ModbusDisconnectRequest,
+  ModbusReadRequest,
+  ModbusReadResult,
 } from '../../domain/entities/Modbus';
 
 // Calls the local Modbus gateway service (server/), which owns the real TCP
@@ -23,7 +25,7 @@ export class ModbusRepositoryImpl implements ModbusRepository {
       const response = await this.apiClient.post<ModbusConnection>('/api/modbus/connect', request);
       return response.data;
     } catch (ex) {
-      const data = this.extractErrorPayload(ex);
+      const data = this.extractErrorPayload<ModbusConnection>(ex);
       if (data) return data;
       throw ex;
     }
@@ -39,9 +41,22 @@ export class ModbusRepositoryImpl implements ModbusRepository {
     return response.data;
   }
 
-  // The gateway responds 502 with a ModbusConnection body on connect failure
-  // (mirrors ModbusClient.vb raising ErrorOccurred instead of throwing).
-  private extractErrorPayload(ex: unknown): ModbusConnection | null {
+  async readHoldingRegisters(request: ModbusReadRequest): Promise<ModbusReadResult> {
+    try {
+      const response = await this.apiClient.get<ModbusReadResult>(`/api/modbus/read/${request.clientId}`, {
+        params: { slaveId: request.slaveId, startAddress: request.startAddress, count: request.count },
+      });
+      return response.data;
+    } catch (ex) {
+      const data = this.extractErrorPayload<ModbusReadResult>(ex);
+      if (data) return data;
+      throw ex;
+    }
+  }
+
+  // The gateway responds with a typed error body on failure (mirrors
+  // ModbusClient.vb raising ErrorOccurred instead of throwing).
+  private extractErrorPayload<T>(ex: unknown): T | null {
     if (
       ex &&
       typeof ex === 'object' &&
@@ -50,7 +65,7 @@ export class ModbusRepositoryImpl implements ModbusRepository {
       typeof ex.response === 'object' &&
       'data' in ex.response
     ) {
-      return (ex.response as { data: ModbusConnection }).data;
+      return (ex.response as { data: T }).data;
     }
     return null;
   }

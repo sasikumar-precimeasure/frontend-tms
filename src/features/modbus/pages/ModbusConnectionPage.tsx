@@ -1,11 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
-import { connectModbusAsync, disconnectModbusAsync, clearModbusError, clearModbusLogs } from '../slice';
+import {
+  connectModbusAsync,
+  disconnectModbusAsync,
+  readHoldingRegistersAsync,
+  clearModbusError,
+  clearModbusLogs,
+} from '../slice';
 import { Button } from '../../../shared/components';
 
 const DEFAULT_CLIENT_ID = 1;
 const DEFAULT_PORT = 502; // MODBUS_PORT
+
+// FC03 read parameters for this POC (mirrors ModbusClient.vb ReadRegisters)
+const READ_SLAVE_ID = 1;
+const READ_START_ADDRESS = 4001;
+const READ_COUNT = 80;
+const POLL_INTERVAL_MS = 1000;
 
 const STATUS_STYLES: Record<string, string> = {
   disconnected: 'bg-gray-100 text-gray-700',
@@ -16,13 +28,44 @@ const STATUS_STYLES: Record<string, string> = {
 
 const ModbusConnectionPage = () => {
   const dispatch = useAppDispatch();
-  const { ipAddress, port, status, isConnected, isConnecting, isDisconnecting, error, logs } = useAppSelector(
-    (state) => state.modbus
-  );
+  const {
+    ipAddress,
+    port,
+    status,
+    isConnected,
+    isConnecting,
+    isDisconnecting,
+    error,
+    logs,
+    registers,
+    isReading,
+    readError,
+    lastReadAt,
+  } = useAppSelector((state) => state.modbus);
 
   const [ip, setIp] = useState(ipAddress || '');
   const [portInput, setPortInput] = useState(String(port || DEFAULT_PORT));
   const [ipError, setIpError] = useState<string | null>(null);
+
+  // Poll FC03 (Read Holding Registers) every 1 second while connected.
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const poll = () => {
+      dispatch(
+        readHoldingRegistersAsync({
+          clientId: DEFAULT_CLIENT_ID,
+          slaveId: READ_SLAVE_ID,
+          startAddress: READ_START_ADDRESS,
+          count: READ_COUNT,
+        })
+      );
+    };
+
+    poll();
+    const intervalId = setInterval(poll, POLL_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [isConnected, dispatch]);
 
   const handleConnect = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -134,7 +177,50 @@ const ModbusConnectionPage = () => {
           </form>
         </div>
 
-        <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8 flex flex-col max-h-[80vh]">
+        <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-lg font-bold text-gray-800">Live Registers (FC03)</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Slave {READ_SLAVE_ID} &middot; Address {READ_START_ADDRESS} &middot; Count {READ_COUNT} &middot;
+                polling every {POLL_INTERVAL_MS / 1000}s
+              </p>
+            </div>
+            {isReading && <span className="text-xs text-blue-600 font-medium animate-pulse">Reading...</span>}
+          </div>
+
+          {!isConnected && <p className="text-sm text-gray-400">Connect to start reading holding registers.</p>}
+
+          {isConnected && readError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+              <p className="text-red-800 text-xs font-medium">{readError}</p>
+            </div>
+          )}
+
+          {isConnected && registers && (
+            <>
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 max-h-64 overflow-y-auto pr-1">
+                {registers.map((value, i) => (
+                  <div
+                    key={READ_START_ADDRESS + i}
+                    className="bg-gray-50 border border-gray-200 rounded px-1.5 py-1 text-center"
+                    title={`Address ${READ_START_ADDRESS + i}`}
+                  >
+                    <div className="text-[9px] text-gray-400">{READ_START_ADDRESS + i}</div>
+                    <div className="text-xs font-mono font-semibold text-gray-800">{value}</div>
+                  </div>
+                ))}
+              </div>
+              {lastReadAt && (
+                <p className="text-[11px] text-gray-400 mt-3">
+                  Last updated {new Date(lastReadAt).toLocaleTimeString()}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="bg-white rounded-xl shadow-lg p-6 sm:p-8 flex flex-col max-h-[80vh] lg:row-span-2">
           <div className="flex items-center justify-between mb-4 shrink-0">
             <h2 className="text-lg font-bold text-gray-800">Request / Response Log</h2>
             {logs.length > 0 && (

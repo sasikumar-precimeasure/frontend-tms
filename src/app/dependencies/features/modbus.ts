@@ -2,6 +2,7 @@ import axios from 'axios';
 import { ModbusRepositoryImpl } from '../../../infrastructure/repositories/ModbusRepositoryImpl';
 import { ConnectModbusUseCase } from '../../../domain/usecases/ConnectModbusUseCase';
 import { DisconnectModbusUseCase } from '../../../domain/usecases/DisconnectModbusUseCase';
+import { ReadHoldingRegistersUseCase } from '../../../domain/usecases/ReadHoldingRegistersUseCase';
 import type { ModbusDependencies } from '../types';
 
 // Local gateway service (server/) that owns the real TCP socket to the hardware -
@@ -14,10 +15,12 @@ export function createModbusDependencies(): ModbusDependencies {
 
   const connectModbusUseCase = new ConnectModbusUseCase(modbusRepository);
   const disconnectModbusUseCase = new DisconnectModbusUseCase(modbusRepository);
+  const readHoldingRegistersUseCase = new ReadHoldingRegistersUseCase(modbusRepository);
 
   return {
     modbusRepository,
     connectModbusUseCase,
     disconnectModbusUseCase,
+    readHoldingRegistersUseCase,
   };
 }

@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import type { ModbusConnection } from '../../domain/entities/Modbus';
+import type { ModbusConnection, ModbusReadResult } from '../../domain/entities/Modbus';
 import type { Dependencies } from '../../app/dependencies';
 import { AxiosError } from 'axios';
 
@@ -23,6 +23,11 @@ interface ModbusState {
   isDisconnecting: boolean;
   error: string | null;
   logs: ModbusLogEntry[];
+  // -- FC03: Read Holding Registers (polled every 1s while connected) --
+  registers: number[] | null;
+  isReading: boolean;
+  readError: string | null;
+  lastReadAt: string | null;
 }
 
 const MAX_LOG_ENTRIES = 20;
@@ -37,6 +42,10 @@ const initialState: ModbusState = {
   isDisconnecting: false,
   error: null,
   logs: [],
+  registers: null,
+  isReading: false,
+  readError: null,
+  lastReadAt: null,
 };
 
 function pushLog(state: ModbusState, entry: ModbusLogEntry) {
@@ -76,6 +85,20 @@ export const disconnectModbusAsync = createAsyncThunk<
   try {
     const modbus = extra.modbus();
     return await modbus.disconnectModbusUseCase.execute(request);
+  } catch (error: unknown) {
+    return rejectWithValue(extractErrorMessage(error));
+  }
+});
+
+// -- FC03: Read Holding Registers -- (mirrors ModbusClient.vb ReadRegisters)
+export const readHoldingRegistersAsync = createAsyncThunk<
+  ModbusReadResult,
+  { clientId: number; slaveId: number; startAddress: number; count: number },
+  { extra: Dependencies }
+>('modbus/readHoldingRegisters', async (request, { extra, rejectWithValue }) => {
+  try {
+    const modbus = extra.modbus();
+    return await modbus.readHoldingRegistersUseCase.execute(request);
   } catch (error: unknown) {
     return rejectWithValue(extractErrorMessage(error));
   }
@@ -150,6 +173,9 @@ const modbusSlice = createSlice({
         state.status = action.payload.status;
         state.isConnected = action.payload.isConnected;
         state.error = action.payload.errorMessage;
+        state.registers = null;
+        state.readError = null;
+        state.lastReadAt = null;
         const log = state.logs.find((l) => l.id === action.meta.requestId);
         if (log) log.response = action.payload;
       })
@@ -158,6 +184,22 @@ const modbusSlice = createSlice({
         state.error = action.payload as string;
         const log = state.logs.find((l) => l.id === action.meta.requestId);
         if (log) log.errorMessage = action.payload as string;
+      })
+
+      // -- Read Holding Registers (FC03) --
+      .addCase(readHoldingRegistersAsync.pending, (state) => {
+        state.isReading = true;
+      })
+      .addCase(readHoldingRegistersAsync.fulfilled, (state, action) => {
+        state.isReading = false;
+        state.registers = action.payload.registers;
+        state.readError = action.payload.errorMessage;
+        state.lastReadAt = new Date().toISOString();
+      })
+      .addCase(readHoldingRegistersAsync.rejected, (state, action) => {
+        state.isReading = false;
+        state.readError = action.payload as string;
+        state.lastReadAt = new Date().toISOString();
       });
   },
 });
