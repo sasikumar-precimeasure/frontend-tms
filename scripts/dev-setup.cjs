@@ -10,10 +10,11 @@ const fs = require('node:fs');
 
 const rootDir = path.join(__dirname, '..');
 const serverDir = path.join(rootDir, 'server');
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const isWindows = process.platform === 'win32';
+const npmCmd = isWindows ? 'npm.cmd' : 'npm';
 
 function run(command, args, options) {
-  const result = spawnSync(command, args, { stdio: 'inherit', ...options });
+  const result = spawnSync(command, args, { stdio: 'inherit', shell: isWindows, ...options });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
@@ -34,7 +35,7 @@ if (!hasNodeModules(serverDir)) {
 }
 
 console.log('Starting website + Modbus gateway...');
-const child = spawn(npmCmd, ['run', 'dev:all'], { cwd: rootDir, stdio: 'inherit' });
+const child = spawn(npmCmd, ['run', 'dev:all'], { cwd: rootDir, stdio: 'inherit', shell: isWindows });
 
 child.on('exit', (code) => process.exit(code ?? 0));
 process.on('SIGINT', () => child.kill('SIGINT'));
