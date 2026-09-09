@@ -1,6 +1,5 @@
 import { Route, createBrowserRouter, createRoutesFromElements, Navigate } from 'react-router-dom';
 import { LoginPage } from '../../features/auth/pages/LoginPage';
-import { ProtectedRoute } from '../../shared/components/ProtectedRoute';
 import { TmsAppLayout } from '../../shared/components/TmsAppLayout';
 import DashboardPage from '../../features/dashboard/DashboardPage';
 import SettingsPage from '../../features/connectionSettings/pages/SettingsPage';
@@ -12,14 +11,9 @@ const MainRouter = createBrowserRouter(
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/login" element={<LoginPage />} />
 
-      {/* Protected Routes - side menu shell (Dashboard / Settings) */}
-      <Route
-        element={
-          <ProtectedRoute>
-            <TmsAppLayout />
-          </ProtectedRoute>
-        }
-      >
+      {/* Side menu shell (Dashboard / Settings) - auth guard disabled for now,
+          no backend to authenticate against yet. */}
+      <Route element={<TmsAppLayout />}>
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
