@@ -11,6 +11,39 @@ const GATEWAY_BASE_URL = import.meta.env.VITE_MODBUS_GATEWAY_URL || 'http://loca
 
 export function createModbusDependencies(): ModbusDependencies {
   const gatewayClient = axios.create({ baseURL: GATEWAY_BASE_URL });
+
+  // Log every request/response to the Modbus gateway in the browser console -
+  // separate from the gateway's own terminal logs, which are only visible in
+  // the Node process running server/ (never in the browser).
+  gatewayClient.interceptors.request.use((config) => {
+    const url = `${config.baseURL ?? ''}${config.url ?? ''}`;
+    console.log(
+      `[Modbus] --> ${config.method?.toUpperCase()} ${url}`,
+      config.params ?? config.data ?? {}
+    );
+    return config;
+  });
+
+  gatewayClient.interceptors.response.use(
+    (response) => {
+      const url = `${response.config.baseURL ?? ''}${response.config.url ?? ''}`;
+      console.log(
+        `[Modbus] <-- ${response.config.method?.toUpperCase()} ${url} ${response.status}`,
+        response.data
+      );
+      return response;
+    },
+    (error) => {
+      const config = error.config ?? {};
+      const url = `${config.baseURL ?? ''}${config.url ?? ''}`;
+      console.log(
+        `[Modbus] <-- ${config.method?.toUpperCase?.() ?? '?'} ${url} ${error.response?.status ?? 'ERROR'}`,
+        error.response?.data ?? error.message
+      );
+      return Promise.reject(error);
+    }
+  );
+
   const modbusRepository = new ModbusRepositoryImpl(gatewayClient);
 
   const connectModbusUseCase = new ConnectModbusUseCase(modbusRepository);
