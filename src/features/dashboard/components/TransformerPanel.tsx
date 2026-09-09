@@ -4,6 +4,14 @@ import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { Transformer } from '../../../domain/entities/ConnectionSettings';
 import { mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
 import { readTransformerRegistersAsync } from '../slice';
+import { useValueFlash } from '../hooks/useValueFlash';
+import { useHistory } from '../hooks/useHistory';
+import { Sparkline } from './Sparkline';
+
+// Rough operating band for the temperature fill bar - a purely visual cue,
+// not a real alarm threshold (those aren't wired up yet).
+const TEMP_MIN_C = 20;
+const TEMP_MAX_C = 90;
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -22,33 +30,55 @@ function ReadingTile({
   value,
   unit,
   unavailable,
+  showFill,
+  showTrend,
 }: {
   label: string;
   value: number | null;
   unit?: string;
   unavailable?: boolean;
+  showFill?: boolean;
+  showTrend?: boolean;
 }) {
+  const flashing = useValueFlash(value);
+  const history = useHistory(showTrend ? value : null);
+  const fillPercent =
+    showFill && value !== null
+      ? Math.max(0, Math.min(100, ((value - TEMP_MIN_C) / (TEMP_MAX_C - TEMP_MIN_C)) * 100))
+      : null;
+
   return (
     <div
-      className={`flex flex-col gap-1 px-4 py-3 bg-white rounded-lg border ${unavailable ? 'border-status-critical/30' : 'border-surface-200'}`}
+      className={`relative flex flex-col gap-1 px-4 py-3 bg-white rounded-lg border overflow-hidden ${unavailable ? 'border-status-critical/30' : 'border-surface-200'} ${flashing ? 'animate-value-flash' : ''}`}
     >
-      <span className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">{label}</span>
+      {fillPercent !== null && (
+        <div
+          aria-hidden
+          className="absolute inset-x-0 bottom-0 bg-primary/10 transition-[height] duration-700 ease-out"
+          style={{ height: `${fillPercent}%` }}
+        />
+      )}
+      <span className="relative text-[11px] font-semibold uppercase tracking-wider text-surface-500">{label}</span>
       <span
-        className={`font-mono tabular-nums text-2xl font-semibold ${unavailable ? 'text-status-critical/60' : 'text-surface-900'}`}
+        className={`relative font-mono tabular-nums text-2xl font-semibold transition-colors duration-300 ${unavailable ? 'text-status-critical/60' : 'text-surface-900'}`}
       >
         {value === null ? (unavailable ? 'N/A' : '—') : value}
         {value !== null && unit && <span className="text-base font-medium text-surface-400 ml-0.5">{unit}</span>}
       </span>
+      {showTrend && <Sparkline values={history} unavailable={unavailable} />}
     </div>
   );
 }
 
 function StatValue({ label, value, unavailable }: { label: string; value: ReactNode; unavailable?: boolean }) {
+  const flashing = useValueFlash(value);
   return (
-    <div className="flex items-center justify-between gap-3 py-2 border-b border-surface-100 last:border-b-0">
+    <div
+      className={`flex items-center justify-between gap-3 py-2 px-2 -mx-2 rounded-md border-b border-surface-100 last:border-b-0 ${flashing ? 'animate-value-flash' : ''}`}
+    >
       <span className="text-sm text-surface-600">{label}</span>
       <span
-        className={`font-mono tabular-nums text-sm font-semibold ${unavailable ? 'text-status-critical/60' : 'text-surface-900'}`}
+        className={`font-mono tabular-nums text-sm font-semibold transition-colors duration-300 ${unavailable ? 'text-status-critical/60' : 'text-surface-900'}`}
       >
         {unavailable ? 'N/A' : value}
       </span>
@@ -137,7 +167,7 @@ export const TransformerPanel = ({ transformer }: TransformerPanelProps) => {
   const hasReadError = Boolean(trReadState?.errorMessage);
 
   return (
-    <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
+    <div className="max-w-5xl mx-auto px-6 py-6 space-y-5 animate-panel-enter">
       {!isLinked && (
         <div className="px-4 py-2.5 rounded-lg bg-status-warn-soft text-status-warn text-sm font-medium">
           Not linked to a device — configure this in Settings &rarr; Connection Settings.
@@ -162,10 +192,36 @@ export const TransformerPanel = ({ transformer }: TransformerPanelProps) => {
 
       {/* Temperatures */}
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <ReadingTile label="OTI Temperature" value={readings.otiTemperature} unit="°C" unavailable={hasReadError} />
-        <ReadingTile label="OTI Max" value={readings.otiTemperatureMax} unit="°C" unavailable={hasReadError} />
-        <ReadingTile label="WTI Temperature" value={readings.wtiTemperature} unit="°C" unavailable={hasReadError} />
-        <ReadingTile label="WTI Max" value={readings.wtiTemperatureMax} unit="°C" unavailable={hasReadError} />
+        <ReadingTile
+          label="OTI Temperature"
+          value={readings.otiTemperature}
+          unit="°C"
+          unavailable={hasReadError}
+          showFill
+          showTrend
+        />
+        <ReadingTile
+          label="OTI Max"
+          value={readings.otiTemperatureMax}
+          unit="°C"
+          unavailable={hasReadError}
+          showFill
+        />
+        <ReadingTile
+          label="WTI Temperature"
+          value={readings.wtiTemperature}
+          unit="°C"
+          unavailable={hasReadError}
+          showFill
+          showTrend
+        />
+        <ReadingTile
+          label="WTI Max"
+          value={readings.wtiTemperatureMax}
+          unit="°C"
+          unavailable={hasReadError}
+          showFill
+        />
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
