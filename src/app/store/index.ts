@@ -1,6 +1,7 @@
 import { configureStore } from '@reduxjs/toolkit';
 import authReducer from '../../features/auth/slice';
-import modbusReducer from '../../features/modbus/slice';
+import connectionSettingsReducer from '../../features/connectionSettings/slice';
+import dashboardReducer from '../../features/dashboard/slice';
 import type { Dependencies } from '../dependencies';
 
 export interface StoreConfig {
@@ -13,7 +14,8 @@ export function createStore(config: StoreConfig) {
   return configureStore({
     reducer: {
       auth: authReducer,
-      modbus: modbusReducer,
+      connectionSettings: connectionSettingsReducer,
+      dashboard: dashboardReducer,
     },
     middleware: (getDefaultMiddleware) =>
       getDefaultMiddleware({

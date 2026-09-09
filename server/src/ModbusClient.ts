@@ -27,6 +27,10 @@ const READ_TIMEOUT_MS = 1000;
 const WRITE_TIMEOUT_MS = 1000;
 const MAX_REGISTERS = 125; // Modbus spec limit per transaction
 
+function toHex(buffer: Buffer): string {
+  return buffer.toString('hex').match(/.{1,2}/g)?.join(' ') ?? '';
+}
+
 function getExceptionMessage(code: number): string {
   switch (code) {
     case 1:
@@ -121,6 +125,7 @@ export class ModbusClient {
 
       this._ipAddress = ipAddress;
       this._port = port;
+      console.log(`[Modbus:${this._clientId}] Connect request  -> ${ipAddress}:${port}`);
       this.raiseStatusChanged(`Connecting to ${ipAddress}:${port}...`, false);
 
       const socket = new Socket();
@@ -149,6 +154,7 @@ export class ModbusClient {
           this._recvWaiters = [];
           waiters.forEach((wake) => wake());
         });
+        console.log(`[Modbus:${this._clientId}] Connect response <- connected to ${ipAddress}:${port}`);
         this.raiseStatusChanged(`Connected to ${ipAddress}:${port}`, true);
         resolve();
       });
@@ -158,6 +164,7 @@ export class ModbusClient {
         settled = true;
         cleanupListeners();
         const message = `Connection to ${ipAddress}:${port} timed out`;
+        console.log(`[Modbus:${this._clientId}] Connect response <- ${message}`);
         socket.destroy();
         this._socket = null;
         this._isConnected = false;
@@ -170,6 +177,7 @@ export class ModbusClient {
         this._isConnected = false;
         if (settled) {
           // Error after a successful connect: mirror VB's comm-error handling.
+          console.log(`[Modbus:${this._clientId}] Comm error <- ${err.message}`);
           this._socket = null;
           this.raiseStatusChanged('Disconnected', false);
           this.raiseErrorOccurred(`Comm error: ${err.message}`);
@@ -177,6 +185,7 @@ export class ModbusClient {
         }
         settled = true;
         cleanupListeners();
+        console.log(`[Modbus:${this._clientId}] Connect response <- ${err.message}`);
         this._socket = null;
         this.raiseStatusChanged('Disconnected', false);
         this.raiseErrorOccurred(`Connect: ${err.message}`);
@@ -196,6 +205,7 @@ export class ModbusClient {
 
   // Mirrors: Public Sub Disconnect()
   disconnect(): void {
+    console.log(`[Modbus:${this._clientId}] Disconnect request -> ${this._ipAddress}:${this._port}`);
     this._isConnected = false;
     try {
       this._socket?.destroy();
@@ -270,11 +280,16 @@ export class ModbusClient {
     request.writeUInt8((count >> 8) & 0xff, 10); // Quantity High
     request.writeUInt8(count & 0xff, 11); // Quantity Low
 
+    console.log(
+      `[Modbus:${this._clientId}] FC03 request  tid=${tid} slave=${slaveId} start=${startAddress} qty=${count} bytes=[${toHex(request)}]`
+    );
+
     await this.writeToSocket(socket, request);
 
     // Read response header (9 bytes: 6 MBAP + FC + byte count)
     const header = await this.readBytes(socket, 9, READ_TIMEOUT_MS);
     if (header.length !== 9) {
+      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - incomplete header [${toHex(header)}]`);
       this.raiseErrorOccurred('Read: Incomplete response header', slaveId);
       throw new Error('Read: Incomplete response header');
     }
@@ -282,21 +297,43 @@ export class ModbusClient {
     // Check for exception response
     if ((header[7] & 0x80) === 0x80) {
       const message = `FC03 Exception: ${getExceptionMessage(header[8])}`;
+      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(header)}]`);
       this.raiseErrorOccurred(message, slaveId);
       throw new Error(message);
     }
 
     const byteCount = header[8];
+
+    // Guard against a slave returning a byteCount that doesn't match what we
+    // asked for (malformed/non-conformant response) - trusting the requested
+    // `count` here (as ModbusClient.vb does) would read past the end of
+    // dataBytes and silently produce corrupted/undefined register values.
+    if (byteCount !== count * 2) {
+      const message = `Read: Unexpected byte count ${byteCount} for ${count} register(s)`;
+      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(header)}]`);
+      this.raiseErrorOccurred(message, slaveId);
+      throw new Error(message);
+    }
+
     const dataBytes = await this.readBytes(socket, byteCount, READ_TIMEOUT_MS);
     if (dataBytes.length !== byteCount) {
+      console.log(
+        `[Modbus:${this._clientId}] FC03 response tid=${tid} - incomplete data, got ${dataBytes.length}/${byteCount} bytes [${toHex(dataBytes)}]`
+      );
       this.raiseErrorOccurred('Read: Incomplete data response', slaveId);
       throw new Error('Read: Incomplete data response');
     }
 
+    const registerCount = Math.floor(dataBytes.length / 2);
     const registers: number[] = [];
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < registerCount; i++) {
       registers.push((dataBytes[i * 2] << 8) | dataBytes[i * 2 + 1]);
     }
+
+    console.log(
+      `[Modbus:${this._clientId}] FC03 response tid=${tid} slave=${slaveId} bytes=[${toHex(header)} ${toHex(dataBytes)}] registers=[${registers.join(', ')}]`
+    );
+
     return registers;
   }
 

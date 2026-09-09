@@ -1,26 +1,28 @@
 import { Route, createBrowserRouter, createRoutesFromElements, Navigate } from 'react-router-dom';
 import { LoginPage } from '../../features/auth/pages/LoginPage';
 import { ProtectedRoute } from '../../shared/components/ProtectedRoute';
+import { TmsAppLayout } from '../../shared/components/TmsAppLayout';
 import DashboardPage from '../../features/dashboard/DashboardPage';
-import ModbusConnectionPage from '../../features/modbus/pages/ModbusConnectionPage';
+import SettingsPage from '../../features/connectionSettings/pages/SettingsPage';
 
 const MainRouter = createBrowserRouter(
   createRoutesFromElements(
     <>
       {/* Public Routes */}
-      <Route path="/" element={<Navigate to="/modbus" replace />} />
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/modbus" element={<ModbusConnectionPage />} />
 
-      {/* Protected Routes */}
+      {/* Protected Routes - side menu shell (Dashboard / Settings) */}
       <Route
-        path="/dashboard"
         element={
           <ProtectedRoute>
-            <DashboardPage />
+            <TmsAppLayout />
           </ProtectedRoute>
         }
-      />
+      >
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Route>
     </>
   )
 );

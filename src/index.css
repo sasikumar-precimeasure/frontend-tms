@@ -1,5 +1,42 @@
 @import 'tailwindcss';
 
+@theme {
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+
+  --color-primary: #064a91;
+  --color-primary-50: #eef4fb;
+  --color-primary-100: #dbeafe;
+  --color-primary-200: #bfdbfe;
+  --color-primary-300: #93c5fd;
+  --color-primary-400: #60a5fa;
+  --color-primary-500: #3b82f6;
+  --color-primary-600: #2563eb;
+  --color-primary-700: #053d75;
+  --color-primary-800: #1e40af;
+  --color-primary-900: #1e3a8a;
+
+  /* Slate with a slight blue bias, so the neutral reads as chosen rather
+     than a default gray, and sits naturally alongside --color-primary. */
+  --color-surface-50: #f7f9fc;
+  --color-surface-100: #eef1f7;
+  --color-surface-200: #dee3ec;
+  --color-surface-300: #c3cbdb;
+  --color-surface-400: #98a4bc;
+  --color-surface-500: #70809d;
+  --color-surface-600: #526180;
+  --color-surface-700: #3d4a63;
+  --color-surface-800: #283349;
+  --color-surface-900: #1a2233;
+
+  --color-status-good: #15803d;
+  --color-status-good-soft: #dcfce7;
+  --color-status-warn: #b45309;
+  --color-status-warn-soft: #fef3c7;
+  --color-status-critical: #b91c1c;
+  --color-status-critical-soft: #fee2e2;
+}
+
 :root {
   --primary-color: #064a91;
   --primary-hover: #053d75;
@@ -8,5 +45,5 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: ui-sans-serif, system-ui, sans-serif;
+  background-color: var(--color-surface-100);
 }

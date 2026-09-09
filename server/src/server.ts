@@ -9,6 +9,24 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Log every HTTP request/response through the gateway (separate from the
+// Modbus-protocol-level logging inside ModbusClient, which logs the raw wire
+// traffic to the device).
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  const payload = Object.keys(req.body ?? {}).length > 0 ? req.body : req.query;
+  console.log(`[HTTP] --> ${req.method} ${req.originalUrl} ${JSON.stringify(payload)}`);
+
+  const originalJson = res.json.bind(res);
+  res.json = (body: unknown) => {
+    const durationMs = Date.now() - startedAt;
+    console.log(`[HTTP] <-- ${req.method} ${req.originalUrl} ${res.statusCode} (${durationMs}ms) ${JSON.stringify(body)}`);
+    return originalJson(body);
+  };
+
+  next();
+});
+
 const clients = new Map<number, ModbusClient>();
 
 function getOrCreateClient(clientId: number): ModbusClient {
