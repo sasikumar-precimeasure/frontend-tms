@@ -303,7 +303,8 @@ export function mapRegistersToReadings(
     annAckWords: [annAckWord1, annAckWord2],
     hooterActive: hooterRaw === null ? null : hooterRaw !== 0,
     muteVisible: muteRaw === null ? null : muteRaw !== 0,
-    avrModeIsAuto: avrModeRaw === null ? null : avrModeRaw === 1,
+    // double_byte(44) = 0 -> AUTO, else -> MANUAL (Form1.txt line ~4495).
+    avrModeIsAuto: avrModeRaw === null ? null : avrModeRaw === 0,
     afrActive: readBit(avrStatusWord, 0),
     raiseRelayActive: readBit(avrStatusWord, 1),
     lowerRelayActive: readBit(avrStatusWord, 2),

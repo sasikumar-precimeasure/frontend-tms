@@ -456,28 +456,39 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
           >
             AVR Mode: {readings.avrModeIsAuto === null ? '—' : readings.avrModeIsAuto ? 'AUTO' : 'MANUAL'}
           </ActionButton>
-          <ActionButton
-            disabled={writesByKey[tapRaiseKey]?.isWriting}
-            onClick={() => writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', offsets.tapRaiseWriteRegister, 1)}
-          >
-            Tap Raise
-          </ActionButton>
-          <ActionButton
-            disabled={writesByKey[tapLowerKey]?.isWriting}
-            onClick={() =>
-              writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', offsets.tapLowerWriteRegister, 1)
-            }
-          >
-            Tap Lower
-          </ActionButton>
-          <ActionButton
-            disabled={writesByKey[cfResetKey]?.isWriting}
-            onClick={() =>
-              writeAvrControl('cf-reset', 'Are you sure you want to Reset?', offsets.controlFailResetWriteRegister, 0)
-            }
-          >
-            Control Fail Reset
-          </ActionButton>
+          {readings.avrModeIsAuto === false && (
+            <>
+              <ActionButton
+                disabled={writesByKey[tapRaiseKey]?.isWriting}
+                onClick={() =>
+                  writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', offsets.tapRaiseWriteRegister, 1)
+                }
+              >
+                Tap Raise
+              </ActionButton>
+              <ActionButton
+                disabled={writesByKey[tapLowerKey]?.isWriting}
+                onClick={() =>
+                  writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', offsets.tapLowerWriteRegister, 1)
+                }
+              >
+                Tap Lower
+              </ActionButton>
+              <ActionButton
+                disabled={writesByKey[cfResetKey]?.isWriting}
+                onClick={() =>
+                  writeAvrControl(
+                    'cf-reset',
+                    'Are you sure you want to Reset?',
+                    offsets.controlFailResetWriteRegister,
+                    0
+                  )
+                }
+              >
+                Control Fail Reset
+              </ActionButton>
+            </>
+          )}
         </div>
       </section>
 
