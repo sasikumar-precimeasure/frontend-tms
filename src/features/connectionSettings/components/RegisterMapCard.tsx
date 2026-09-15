@@ -33,6 +33,7 @@ const FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
   tapRaiseWriteRegister: 'AVR — Tap Raise',
   tapLowerWriteRegister: 'AVR — Tap Lower',
   controlFailResetWriteRegister: 'AVR — Control Fail Reset',
+  controlFailStatusRegister: 'AVR — Control Fail Status',
   avrStatusWord: 'AVR — Status Word',
 };
 

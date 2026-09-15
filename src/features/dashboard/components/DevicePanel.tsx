@@ -450,7 +450,9 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
                   ? 'Switch AVR mode to MANUAL?'
                   : 'Switch AVR mode to AUTO?',
                 offsets.avrModeWriteRegister,
-                readings.avrModeIsAuto ? 0 : 1
+                // Btn_AvrAuto_Click: sends 1 when currently AUTO (switching
+                // to Manual), 0 when currently Manual (switching to Auto).
+                readings.avrModeIsAuto ? 1 : 0
               )
             }
           >
@@ -474,20 +476,18 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
               >
                 Tap Lower
               </ActionButton>
-              <ActionButton
-                disabled={writesByKey[cfResetKey]?.isWriting}
-                onClick={() =>
-                  writeAvrControl(
-                    'cf-reset',
-                    'Are you sure you want to Reset?',
-                    offsets.controlFailResetWriteRegister,
-                    0
-                  )
-                }
-              >
-                Control Fail Reset
-              </ActionButton>
             </>
+          )}
+          {readings.controlFailActive && (
+            <ActionButton
+              tone="critical"
+              disabled={writesByKey[cfResetKey]?.isWriting}
+              onClick={() =>
+                writeAvrControl('cf-reset', 'Are you sure you want to Reset?', offsets.controlFailResetWriteRegister, 0)
+              }
+            >
+              Control Fail Reset
+            </ActionButton>
           )}
         </div>
       </section>

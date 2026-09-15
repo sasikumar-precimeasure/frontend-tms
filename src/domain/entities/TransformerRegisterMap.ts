@@ -54,6 +54,11 @@ export interface RegisterOffsetMap {
   tapRaiseWriteRegister: number;
   tapLowerWriteRegister: number;
   controlFailResetWriteRegister: number;
+  // Control Fail status (mirrors double_byte(66), a direct value distinct
+  // from the write-target register above): 0 = hidden, non-zero = visible.
+  // Gates the Control Fail Reset button's visibility, matching
+  // UpdateControlFail(double_byte(66), Btn_CfReset) in Form1.txt.
+  controlFailStatusRegister: number;
   // AVR status word (mirrors double_byte(9), bit-decoded via And_Calc/And_Ans):
   // bit 0 = AFR, bit 1 = Raise Relay, bit 2 = Lower Relay, bit 6 = Over Volt,
   // bit 7 = Under Volt.
@@ -108,6 +113,7 @@ export const DEFAULT_REGISTER_CONFIG: TransformerRegisterConfig = {
     tapRaiseWriteRegister: 44,
     tapLowerWriteRegister: 45,
     controlFailResetWriteRegister: 65,
+    controlFailStatusRegister: 66,
     avrStatusWord: 9,
   },
 };
@@ -173,6 +179,9 @@ export interface DashboardReadings {
   // read-only indicator lights in the legacy UI (IndiTapRaise/IndiTaplow/
   // UnderVolt/OverVolt), never clicked.
   avrModeIsAuto: boolean | null;
+  // Control Fail status (mirrors double_byte(66)) - gates whether the
+  // Control Fail Reset button is shown, independent of AVR Mode.
+  controlFailActive: boolean | null;
   afrActive: boolean | null;
   raiseRelayActive: boolean | null;
   lowerRelayActive: boolean | null;
@@ -274,6 +283,7 @@ export function mapRegistersToReadings(
   const muteRaw = get(offsets.annMuteRegister);
   const avrModeRaw = get(offsets.avrModeWriteRegister);
   const avrStatusWord = get(offsets.avrStatusWord);
+  const controlFailRaw = get(offsets.controlFailStatusRegister);
 
   const decodeAnnunciationWords = (word1: number | null, word2: number | null): (boolean | null)[] | null => {
     if (registers === null) return null;
@@ -305,6 +315,7 @@ export function mapRegistersToReadings(
     muteVisible: muteRaw === null ? null : muteRaw !== 0,
     // double_byte(44) = 0 -> AUTO, else -> MANUAL (Form1.txt line ~4495).
     avrModeIsAuto: avrModeRaw === null ? null : avrModeRaw === 0,
+    controlFailActive: controlFailRaw === null ? null : controlFailRaw !== 0,
     afrActive: readBit(avrStatusWord, 0),
     raiseRelayActive: readBit(avrStatusWord, 1),
     lowerRelayActive: readBit(avrStatusWord, 2),
