@@ -24,8 +24,6 @@ const FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
   ptFailRegister: 'PT Fail',
   annAlarmWord1: 'Annunciation — Alarm Word 1',
   annAlarmWord2: 'Annunciation — Alarm Word 2',
-  annAckWord1: 'Annunciation — Ack Word 1',
-  annAckWord2: 'Annunciation — Ack Word 2',
   annHooterRegister: 'Annunciation — Hooter',
   annMuteRegister: 'Annunciation — Mute Visible',
   annMuteWriteRegister: 'Annunciation — Mute Write Target',

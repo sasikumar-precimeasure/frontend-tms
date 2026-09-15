@@ -50,8 +50,7 @@ export function DevicePanelSettingsDrawer({
             startAddress={device.registerConfig.startAddress}
             offsets={device.registerConfig.offsets}
             active={readings.annunciation}
-            acknowledged={readings.annunciationAck}
-            ackWords={readings.annAckWords}
+            alarmWords={readings.annAlarmWords}
             hooterActive={readings.hooterActive}
             muteVisible={readings.muteVisible}
             unavailable={unavailable}
