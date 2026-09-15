@@ -6,6 +6,8 @@ import type {
   ModbusDisconnectRequest,
   ModbusReadRequest,
   ModbusReadResult,
+  ModbusWriteRequest,
+  ModbusWriteResult,
 } from '../../domain/entities/Modbus';
 
 // Calls the local Modbus gateway service (server/), which owns the real TCP
@@ -49,6 +51,17 @@ export class ModbusRepositoryImpl implements ModbusRepository {
       return response.data;
     } catch (ex) {
       const data = this.extractErrorPayload<ModbusReadResult>(ex);
+      if (data) return data;
+      throw ex;
+    }
+  }
+
+  async writeSingleRegister(request: ModbusWriteRequest): Promise<ModbusWriteResult> {
+    try {
+      const response = await this.apiClient.post<ModbusWriteResult>('/api/modbus/write', request);
+      return response.data;
+    } catch (ex) {
+      const data = this.extractErrorPayload<ModbusWriteResult>(ex);
       if (data) return data;
       throw ex;
     }

@@ -8,6 +8,7 @@ import type { ModbusRepository } from '../../domain/repositories/ModbusRepositor
 import type { ConnectModbusUseCase } from '../../domain/usecases/ConnectModbusUseCase';
 import type { DisconnectModbusUseCase } from '../../domain/usecases/DisconnectModbusUseCase';
 import type { ReadHoldingRegistersUseCase } from '../../domain/usecases/ReadHoldingRegistersUseCase';
+import type { WriteSingleRegisterUseCase } from '../../domain/usecases/WriteSingleRegisterUseCase';
 
 /**
  * Shared infrastructure dependencies available to all features.
@@ -36,6 +37,7 @@ export interface ModbusDependencies {
   connectModbusUseCase: ConnectModbusUseCase;
   disconnectModbusUseCase: DisconnectModbusUseCase;
   readHoldingRegistersUseCase: ReadHoldingRegistersUseCase;
+  writeSingleRegisterUseCase: WriteSingleRegisterUseCase;
 }
 
 /**

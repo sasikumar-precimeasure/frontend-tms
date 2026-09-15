@@ -10,12 +10,19 @@ interface TrReadState {
   lastReadAt: string | null;
 }
 
+interface WriteState {
+  isWriting: boolean;
+  errorMessage: string | null;
+}
+
 interface DashboardState {
   readingsByTrId: Record<string, TrReadState>;
+  writesByKey: Record<string, WriteState>;
 }
 
 const initialState: DashboardState = {
   readingsByTrId: {},
+  writesByKey: {},
 };
 
 function extractErrorMessage(error: unknown): string {
@@ -43,11 +50,34 @@ export const readTransformerRegistersAsync = createAsyncThunk<
   }
 });
 
+// Writes a single register (mirrors ModbusClient.vb WriteSingleRegister / FC06) -
+// used by the annunciation panel to acknowledge an alarm on the device itself.
+export const writeRegisterAsync = createAsyncThunk<
+  { key: string; errorMessage: string | null },
+  { key: string; clientId: number; slaveId: number; address: number; value: number },
+  { extra: Dependencies }
+>('dashboard/writeRegister', async (request, { extra, rejectWithValue }) => {
+  try {
+    const modbus = extra.modbus();
+    const result = await modbus.writeSingleRegisterUseCase.execute(request);
+    return { key: request.key, errorMessage: result.errorMessage };
+  } catch (error: unknown) {
+    return rejectWithValue({ key: request.key, message: extractErrorMessage(error) });
+  }
+});
+
 function ensureTrState(state: DashboardState, trId: string): TrReadState {
   if (!state.readingsByTrId[trId]) {
     state.readingsByTrId[trId] = { registers: null, isReading: false, errorMessage: null, lastReadAt: null };
   }
   return state.readingsByTrId[trId];
+}
+
+function ensureWriteState(state: DashboardState, key: string): WriteState {
+  if (!state.writesByKey[key]) {
+    state.writesByKey[key] = { isWriting: false, errorMessage: null };
+  }
+  return state.writesByKey[key];
 }
 
 const dashboardSlice = createSlice({
@@ -77,6 +107,23 @@ const dashboardSlice = createSlice({
         trState.isReading = false;
         trState.errorMessage = payload?.message ?? 'Read failed';
         trState.lastReadAt = new Date().toISOString();
+      })
+      .addCase(writeRegisterAsync.pending, (state, action) => {
+        const writeState = ensureWriteState(state, action.meta.arg.key);
+        writeState.isWriting = true;
+        writeState.errorMessage = null;
+      })
+      .addCase(writeRegisterAsync.fulfilled, (state, action) => {
+        const writeState = ensureWriteState(state, action.payload.key);
+        writeState.isWriting = false;
+        writeState.errorMessage = action.payload.errorMessage;
+      })
+      .addCase(writeRegisterAsync.rejected, (state, action) => {
+        const payload = action.payload as { key: string; message: string } | undefined;
+        const key = payload?.key ?? action.meta.arg.key;
+        const writeState = ensureWriteState(state, key);
+        writeState.isWriting = false;
+        writeState.errorMessage = payload?.message ?? 'Write failed';
       });
   },
 });

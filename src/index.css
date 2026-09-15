@@ -16,6 +16,10 @@
   --color-primary-800: #1e40af;
   --color-primary-900: #1e3a8a;
 
+  /* Card/panel surface - distinct from the page background (surface-100).
+     White in light mode; a dark elevated surface in dark mode. */
+  --color-surface-0: #ffffff;
+
   /* Slate with a slight blue bias, so the neutral reads as chosen rather
      than a default gray, and sits naturally alongside --color-primary. */
   --color-surface-50: #f7f9fc;
@@ -37,9 +41,51 @@
   --color-status-critical-soft: #fee2e2;
 }
 
+/* Dark theme: same token names, redefined values. Every component already
+   uses these tokens (bg-surface-100, text-surface-900, bg-surface-0, ...),
+   so this is the only place that needs to know about dark mode. */
+:root[data-theme='dark'] {
+  --color-primary: #60a5fa;
+  --color-primary-50: #0b1a2e;
+  --color-primary-100: #12233d;
+  --color-primary-200: #1c355a;
+  --color-primary-300: #2b4d7d;
+  --color-primary-400: #3b6ea8;
+  --color-primary-500: #5b90d6;
+  --color-primary-600: #7fabe6;
+  --color-primary-700: #a9c8f0;
+  --color-primary-800: #cfe0f8;
+  --color-primary-900: #eaf2fd;
+
+  --color-surface-0: #101623;
+
+  --color-surface-50: #0c111c;
+  --color-surface-100: #161d2c;
+  --color-surface-200: #232c40;
+  --color-surface-300: #334158;
+  --color-surface-400: #4c5b76;
+  --color-surface-500: #8b96ab;
+  --color-surface-600: #a6afc0;
+  --color-surface-700: #c2c9d6;
+  --color-surface-800: #dbe0e9;
+  --color-surface-900: #eef1f7;
+
+  --color-status-good: #34d399;
+  --color-status-good-soft: color-mix(in oklab, #34d399 18%, transparent);
+  --color-status-warn: #fbbf24;
+  --color-status-warn-soft: color-mix(in oklab, #fbbf24 18%, transparent);
+  --color-status-critical: #f87171;
+  --color-status-critical-soft: color-mix(in oklab, #f87171 18%, transparent);
+}
+
 :root {
   --primary-color: #064a91;
   --primary-hover: #053d75;
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 body {
@@ -78,6 +124,25 @@ body {
   }
 }
 
+@keyframes ambient-drift {
+  0%,
+  100% {
+    transform: translate(-10%, -8%) scale(1);
+  }
+  50% {
+    transform: translate(10%, 8%) scale(1.25);
+  }
+}
+
+@keyframes ambient-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .animate-value-flash {
   animation: value-flash 900ms ease-out;
 }
@@ -90,10 +155,131 @@ body {
   animation: breathe 2.4s ease-in-out infinite;
 }
 
+/* Staggered entrance delays for sibling sections inside a device panel, so
+   they cascade in rather than popping together. */
+.stagger-1 {
+  animation-delay: 0ms;
+}
+.stagger-2 {
+  animation-delay: 60ms;
+}
+.stagger-3 {
+  animation-delay: 120ms;
+}
+.stagger-4 {
+  animation-delay: 180ms;
+}
+
+/* Glow for status dots/chips - a plain dot in light mode (a glow on white
+   reads as a rendering artifact, not a signal), a real halo in dark mode
+   where it reads as a beacon. `currentColor` so the glow always matches
+   whatever color class is applied alongside it. */
+.status-glow {
+  box-shadow: none;
+}
+
+:root[data-theme='dark'] .status-glow {
+  box-shadow: 0 0 8px 1.5px currentColor;
+}
+
+/* Ambient background glow - a slowly-drifting radial gradient (::before) plus
+   a faint rotating conic sweep (::after) behind dashboard content, for a
+   clearly-visible sense of depth and motion. Dark-mode only: the same glow
+   on a light surface reads as a color-cast bug, not atmosphere. */
+.ambient-glow {
+  position: relative;
+}
+
+.ambient-glow::before,
+.ambient-glow::after {
+  content: '';
+  position: absolute;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
+}
+
+:root[data-theme='dark'] .ambient-glow::before {
+  background:
+    radial-gradient(45% 40% at 18% 12%, color-mix(in oklab, var(--color-primary) 45%, transparent), transparent 70%),
+    radial-gradient(40% 38% at 88% 80%, color-mix(in oklab, var(--color-primary) 35%, transparent), transparent 70%);
+  animation: ambient-drift 20s ease-in-out infinite;
+}
+
+:root[data-theme='dark'] .ambient-glow::after {
+  background: conic-gradient(
+    from 0deg at 50% 50%,
+    transparent 0deg,
+    color-mix(in oklab, var(--color-primary) 10%, transparent) 90deg,
+    transparent 180deg,
+    color-mix(in oklab, var(--color-primary) 8%, transparent) 270deg,
+    transparent 360deg
+  );
+  animation: ambient-rotate 40s linear infinite;
+}
+
+.ambient-glow > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Card lift on hover - reads as interactive/alive rather than a flat panel. */
+.card-hover {
+  transition: transform 200ms ease-out, box-shadow 200ms ease-out;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px -8px color-mix(in oklab, var(--color-surface-900) 25%, transparent);
+}
+
+/* Status ring around the TR selector - a plain border by default, a pulsing
+   halo while connecting, a steady glow while connected. Mirrors the color
+   conventions already used by .status-glow / STATUS_DOT. */
+.status-ring {
+  border-radius: 0.5rem;
+  transition: box-shadow 300ms ease-out;
+}
+
+.status-ring[data-status='connecting'] {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-status-warn) 50%, transparent);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.status-ring[data-status='connected'] {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-status-good) 45%, transparent);
+}
+
+:root[data-theme='dark'] .status-ring[data-status='connected'] {
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--color-status-good) 55%, transparent),
+    0 0 10px 1px color-mix(in oklab, var(--color-status-good) 45%, transparent);
+}
+
+:root[data-theme='dark'] .status-ring[data-status='error'] {
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--color-status-critical) 55%, transparent),
+    0 0 10px 1px color-mix(in oklab, var(--color-status-critical) 45%, transparent);
+}
+
+.status-ring[data-status='error'] {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-status-critical) 50%, transparent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-value-flash,
   .animate-panel-enter,
   .animate-breathe {
     animation: none;
+  }
+  .ambient-glow::before,
+  .ambient-glow::after {
+    animation: none;
+  }
+  .status-ring[data-status='connecting'] {
+    animation: none;
+  }
+  .card-hover {
+    transition: none;
   }
 }

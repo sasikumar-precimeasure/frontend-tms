@@ -36,3 +36,18 @@ export interface ModbusReadResult {
   registers: number[] | null;
   errorMessage: string | null;
 }
+
+// -- FC06: Write Single Register --
+export interface ModbusWriteRequest {
+  clientId: number;
+  slaveId: number;
+  address: number;
+  value: number;
+}
+
+export interface ModbusWriteResult {
+  clientId: number;
+  address: number;
+  value: number;
+  errorMessage: string | null;
+}

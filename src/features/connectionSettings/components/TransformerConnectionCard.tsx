@@ -1,70 +1,67 @@
 import { useAppDispatch } from '../../../app/store/hooks';
-import type { Gateway } from '../../../domain/entities/ConnectionSettings';
+import type { Transformer } from '../../../domain/entities/ConnectionSettings';
 import {
-  connectGatewayAsync,
-  disconnectGatewayAsync,
-  removeGateway,
-  updateGatewayField,
-  updateGatewayPort,
+  connectTransformerAsync,
+  disconnectTransformerAsync,
+  updateTransformerConnection,
+  clearTransformerError,
   addSubDevice,
   removeSubDevice,
   updateSubDeviceField,
   updateSubDeviceSlaveId,
   toggleSubDeviceEnabled,
-  clearGatewayError,
 } from '../slice';
 
 const STATUS_DOT: Record<string, string> = {
   disconnected: 'bg-surface-300',
-  connecting: 'bg-status-warn animate-pulse',
-  connected: 'bg-status-good',
-  error: 'bg-status-critical',
+  connecting: 'bg-status-warn text-status-warn animate-pulse status-glow',
+  connected: 'bg-status-good text-status-good animate-breathe status-glow',
+  error: 'bg-status-critical text-status-critical status-glow',
 };
 
-interface GatewayCardProps {
-  gateway: Gateway;
+interface TransformerConnectionCardProps {
+  transformer: Transformer;
 }
 
-export const GatewayCard = ({ gateway }: GatewayCardProps) => {
+export const TransformerConnectionCard = ({ transformer }: TransformerConnectionCardProps) => {
   const dispatch = useAppDispatch();
 
   const handleConnectToggle = () => {
-    if (gateway.isConnected) {
-      dispatch(disconnectGatewayAsync({ gatewayId: gateway.id, clientId: gateway.clientId }));
+    if (transformer.isConnected) {
+      dispatch(disconnectTransformerAsync({ trId: transformer.id, clientId: transformer.clientId }));
     } else {
       dispatch(
-        connectGatewayAsync({
-          gatewayId: gateway.id,
-          clientId: gateway.clientId,
-          ipAddress: gateway.ipAddress,
-          port: gateway.port,
+        connectTransformerAsync({
+          trId: transformer.id,
+          clientId: transformer.clientId,
+          ipAddress: transformer.ipAddress,
+          port: transformer.port,
         })
       );
     }
   };
 
   return (
-    <div className="bg-white rounded-lg border border-surface-200 overflow-hidden">
+    <div className="bg-surface-0 rounded-lg border border-surface-200 overflow-hidden card-hover">
       <div className="flex flex-wrap items-center gap-3 px-4 py-3 bg-surface-50 border-b border-surface-200">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[gateway.status] ?? STATUS_DOT.disconnected}`} />
-
-        <input
-          value={gateway.label}
-          onChange={(e) =>
-            dispatch(updateGatewayField({ gatewayId: gateway.id, field: 'label', value: e.target.value }))
-          }
-          disabled={gateway.isConnected}
-          className="text-sm font-semibold text-surface-800 bg-transparent border-b border-transparent hover:border-surface-300 focus:border-primary outline-none disabled:text-surface-500 w-36"
+        <span
+          className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[transformer.status] ?? STATUS_DOT.disconnected}`}
         />
 
         <div className="flex items-center gap-1.5">
           <label className="text-xs font-medium text-surface-500">IP</label>
           <input
-            value={gateway.ipAddress}
+            value={transformer.ipAddress}
             onChange={(e) =>
-              dispatch(updateGatewayField({ gatewayId: gateway.id, field: 'ipAddress', value: e.target.value }))
+              dispatch(
+                updateTransformerConnection({
+                  trId: transformer.id,
+                  ipAddress: e.target.value,
+                  port: transformer.port,
+                })
+              )
             }
-            disabled={gateway.isConnected}
+            disabled={transformer.isConnected}
             placeholder="192.168.1.10"
             className="px-2 py-1 text-sm font-mono border border-surface-300 rounded-md w-36 disabled:bg-surface-100 disabled:text-surface-400"
           />
@@ -74,40 +71,39 @@ export const GatewayCard = ({ gateway }: GatewayCardProps) => {
           <label className="text-xs font-medium text-surface-500">Port</label>
           <input
             type="number"
-            value={gateway.port}
+            value={transformer.port}
             onChange={(e) =>
-              dispatch(updateGatewayPort({ gatewayId: gateway.id, port: Number(e.target.value) || 0 }))
+              dispatch(
+                updateTransformerConnection({
+                  trId: transformer.id,
+                  ipAddress: transformer.ipAddress,
+                  port: Number(e.target.value) || 0,
+                })
+              )
             }
-            disabled={gateway.isConnected}
+            disabled={transformer.isConnected}
             className="px-2 py-1 text-sm font-mono border border-surface-300 rounded-md w-20 disabled:bg-surface-100 disabled:text-surface-400"
           />
         </div>
 
         <button
           onClick={handleConnectToggle}
-          disabled={gateway.isConnecting}
+          disabled={transformer.isConnecting}
           className={`px-3 py-1.5 text-xs font-semibold rounded-md transition disabled:opacity-50 ${
-            gateway.isConnected
+            transformer.isConnected
               ? 'bg-status-good-soft text-status-good hover:bg-status-good/10'
               : 'bg-primary text-white hover:bg-primary-700'
           }`}
         >
-          {gateway.isConnecting ? 'Connecting…' : gateway.isConnected ? 'Connected' : 'Connect'}
-        </button>
-
-        <button
-          onClick={() => dispatch(removeGateway({ gatewayId: gateway.id }))}
-          className="ml-auto text-xs text-surface-400 hover:text-status-critical font-medium"
-        >
-          Remove
+          {transformer.isConnecting ? 'Connecting…' : transformer.isConnected ? 'Connected' : 'Connect'}
         </button>
       </div>
 
-      {gateway.errorMessage && (
+      {transformer.errorMessage && (
         <div className="mx-4 mt-3 px-3 py-2 rounded-md bg-status-critical-soft flex items-start justify-between gap-2">
-          <p className="text-xs font-medium text-status-critical">{gateway.errorMessage}</p>
+          <p className="text-xs font-medium text-status-critical">{transformer.errorMessage}</p>
           <button
-            onClick={() => dispatch(clearGatewayError({ gatewayId: gateway.id }))}
+            onClick={() => dispatch(clearTransformerError({ trId: transformer.id }))}
             className="text-status-critical/70 hover:text-status-critical text-xs shrink-0"
           >
             ✕
@@ -116,12 +112,12 @@ export const GatewayCard = ({ gateway }: GatewayCardProps) => {
       )}
 
       <div className="px-4 py-3 space-y-1">
-        {gateway.subDevices.map((device) => (
+        {transformer.subDevices.map((device) => (
           <div key={device.id} className="flex flex-wrap items-center gap-3 py-1.5">
             <input
               type="checkbox"
               checked={device.enabled}
-              onChange={() => dispatch(toggleSubDeviceEnabled({ gatewayId: gateway.id, deviceId: device.id }))}
+              onChange={() => dispatch(toggleSubDeviceEnabled({ trId: transformer.id, deviceId: device.id }))}
               className="w-4 h-4 accent-primary"
             />
             <input
@@ -129,7 +125,7 @@ export const GatewayCard = ({ gateway }: GatewayCardProps) => {
               onChange={(e) =>
                 dispatch(
                   updateSubDeviceField({
-                    gatewayId: gateway.id,
+                    trId: transformer.id,
                     deviceId: device.id,
                     field: 'name',
                     value: e.target.value,
@@ -145,7 +141,7 @@ export const GatewayCard = ({ gateway }: GatewayCardProps) => {
               onChange={(e) =>
                 dispatch(
                   updateSubDeviceSlaveId({
-                    gatewayId: gateway.id,
+                    trId: transformer.id,
                     deviceId: device.id,
                     slaveId: Number(e.target.value) || 0,
                   })
@@ -154,7 +150,7 @@ export const GatewayCard = ({ gateway }: GatewayCardProps) => {
               className="w-16 px-2 py-1 text-sm font-mono border border-surface-300 rounded-md"
             />
             <button
-              onClick={() => dispatch(removeSubDevice({ gatewayId: gateway.id, deviceId: device.id }))}
+              onClick={() => dispatch(removeSubDevice({ trId: transformer.id, deviceId: device.id }))}
               className="text-xs text-surface-400 hover:text-status-critical"
             >
               ✕
@@ -163,7 +159,7 @@ export const GatewayCard = ({ gateway }: GatewayCardProps) => {
         ))}
 
         <button
-          onClick={() => dispatch(addSubDevice({ gatewayId: gateway.id }))}
+          onClick={() => dispatch(addSubDevice({ trId: transformer.id }))}
           className="text-xs font-semibold text-primary hover:text-primary-700 mt-1"
         >
           + Add Device

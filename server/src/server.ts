@@ -114,6 +114,32 @@ app.get('/api/modbus/read/:clientId', async (req, res) => {
   }
 });
 
+// POST /api/modbus/write  { clientId, slaveId, address, value }
+app.post('/api/modbus/write', async (req, res) => {
+  const { clientId, slaveId, address, value } = req.body as {
+    clientId: number;
+    slaveId: number;
+    address: number;
+    value: number;
+  };
+
+  const client = getOrCreateClient(clientId);
+  let lastError: string | null = null;
+  const offError = client.onErrorOccurred((event) => {
+    lastError = event.errorMsg;
+  });
+
+  try {
+    await client.writeSingleRegister(slaveId, address, value);
+    res.json({ clientId, address, value, errorMessage: null });
+  } catch (ex) {
+    const message = lastError ?? (ex instanceof Error ? ex.message : String(ex));
+    res.status(502).json({ clientId, address, value, errorMessage: message });
+  } finally {
+    offError();
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Modbus gateway listening on http://localhost:${PORT}`);
 });

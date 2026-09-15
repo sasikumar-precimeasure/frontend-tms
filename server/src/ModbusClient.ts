@@ -337,6 +337,55 @@ export class ModbusClient {
     return registers;
   }
 
+  // -- FC06: Write Single Register --
+  // Mirrors: Public Sub WriteSingleRegister(slaveId As Byte, address As Integer, value As UShort)
+  async writeSingleRegister(slaveId: number, address: number, value: number): Promise<void> {
+    const socket = this._socket;
+    if (!this.isConnected || !socket) {
+      this.raiseErrorOccurred('Write: Not connected', slaveId);
+      throw new Error('Write: Not connected');
+    }
+
+    const tid = this.nextTransactionId();
+
+    // MBAP(6) + Unit(1) + FC(1) + Address(2) + Value(2) = 12 bytes
+    const request = Buffer.alloc(12);
+    request.writeUInt8((tid >> 8) & 0xff, 0);
+    request.writeUInt8(tid & 0xff, 1);
+    request.writeUInt8(0, 2);
+    request.writeUInt8(0, 3);
+    request.writeUInt8(0, 4);
+    request.writeUInt8(6, 5);
+    request.writeUInt8(slaveId, 6);
+    request.writeUInt8(0x06, 7); // Function Code 06
+    request.writeUInt8((address >> 8) & 0xff, 8);
+    request.writeUInt8(address & 0xff, 9);
+    request.writeUInt8((value >> 8) & 0xff, 10);
+    request.writeUInt8(value & 0xff, 11);
+
+    console.log(
+      `[Modbus:${this._clientId}] FC06 request  tid=${tid} slave=${slaveId} address=${address} value=${value} bytes=[${toHex(request)}]`
+    );
+
+    await this.writeToSocket(socket, request);
+
+    const response = await this.readBytes(socket, 12, READ_TIMEOUT_MS);
+    if (response.length < 12) {
+      console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - incomplete response [${toHex(response)}]`);
+      this.raiseErrorOccurred('WriteSingle: Incomplete response', slaveId);
+      throw new Error('WriteSingle: Incomplete response');
+    }
+
+    if ((response[7] & 0x80) === 0x80) {
+      const message = `Write FC06 Exception: ${getExceptionMessage(response[8])}`;
+      console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - ${message} [${toHex(response)}]`);
+      this.raiseErrorOccurred(message, slaveId);
+      throw new Error(message);
+    }
+
+    console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - confirmed [${toHex(response)}]`);
+  }
+
   private writeToSocket(socket: Socket, data: Buffer): Promise<void> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Write timed out')), WRITE_TIMEOUT_MS);
