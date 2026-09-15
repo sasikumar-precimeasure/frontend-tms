@@ -29,6 +29,11 @@ const FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
   annHooterRegister: 'Annunciation — Hooter',
   annMuteRegister: 'Annunciation — Mute Visible',
   annMuteWriteRegister: 'Annunciation — Mute Write Target',
+  avrModeWriteRegister: 'AVR Mode (Auto/Manual)',
+  tapRaiseWriteRegister: 'AVR — Tap Raise',
+  tapLowerWriteRegister: 'AVR — Tap Lower',
+  controlFailResetWriteRegister: 'AVR — Control Fail Reset',
+  avrStatusWord: 'AVR — Status Word',
 };
 
 // Bit-position fields (0-15) are conceptually different from register

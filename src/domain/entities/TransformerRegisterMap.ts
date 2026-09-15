@@ -16,7 +16,9 @@ export interface RegisterOffsetMap {
   tapCount: number;
   ptVoltage: number;
   actualPtVoltage: number;
-  operationMode: number; // 0 = Independent, 1 = Auto/other modes TBD
+  // Mode Display (mirrors double_byte(43)): 4 = Off, 1 = Master, 2 = Follower,
+  // anything else (3, per Form1.txt) = Independent.
+  operationMode: number;
   // Bit-decoded status words. Bit-extraction here is `(word >> bit) & 1`,
   // inferred from usage since the original And_Calc()/And_Ans() bit-decode
   // routine's implementation was not present in the source provided.
@@ -44,6 +46,18 @@ export interface RegisterOffsetMap {
   // (mirrors Btn_Mute_Click's WriteSingleRegister(..., 0)).
   annMuteRegister: number;
   annMuteWriteRegister: number;
+  // AVR controls (mirrors Btn_AvrAuto/Btn_TapRaise/Btn_TapLow/Btn_CfReset's
+  // WriteSingleRegister targets). avrModeWriteRegister is also read back to
+  // show the current AUTO/MANUAL state, same alias pattern as
+  // annMuteRegister/annMuteWriteRegister.
+  avrModeWriteRegister: number;
+  tapRaiseWriteRegister: number;
+  tapLowerWriteRegister: number;
+  controlFailResetWriteRegister: number;
+  // AVR status word (mirrors double_byte(9), bit-decoded via And_Calc/And_Ans):
+  // bit 0 = AFR, bit 1 = Raise Relay, bit 2 = Lower Relay, bit 6 = Over Volt,
+  // bit 7 = Under Volt.
+  avrStatusWord: number;
 }
 
 export interface TransformerRegisterConfig {
@@ -55,39 +69,46 @@ export interface TransformerRegisterConfig {
 // Defaults mirror ModbusClient.vb / Form1.vb's disp() (IRTCC) register map:
 // double_byte(10)=OTI, (11)=WTI, (15)=MOG, (16)/(17)=tap position/max,
 // (18)=tap count, (19)=PT voltage, (21)=actual PT voltage, (22)/(23)=OTI/WTI
-// max, (2)=breaker/OLTC status word, (64)=PT Fail. These are seed values
-// only - each device's offsets are independently editable in Settings.
+// max, (2)=breaker/OLTC status word, (9)=AVR status word, (43)=Mode Display,
+// (44)/(45)/(46)/(66)=AVR mode/tap raise/tap lower/control fail reset write
+// targets, (64)=PT Fail. These are seed values only - each device's offsets
+// are independently editable in Settings.
 export const DEFAULT_REGISTER_CONFIG: TransformerRegisterConfig = {
-  startAddress: 4001,
-  count: 30,
+  startAddress: 40001,
+  count: 80,
   offsets: {
-    otiTemperature: 10,
-    otiTemperatureMax: 22,
-    wtiTemperature: 11,
-    wtiTemperatureMax: 23,
-    mog: 15,
-    tapPosition: 16,
-    tapPositionMax: 17,
-    tapCount: 18,
-    ptVoltage: 19,
-    actualPtVoltage: 21,
-    operationMode: 9,
+    otiTemperature: 9,
+    otiTemperatureMax: 21,
+    wtiTemperature: 10,
+    wtiTemperatureMax: 22,
+    mog: 11,
+    tapPosition: 15,
+    tapPositionMax: 16,
+    tapCount: 17,
+    ptVoltage: 18,
+    actualPtVoltage: 20,
+    operationMode: 42,
     lvBreakerWord: 2,
     lvBreakerBit: 1,
     hvBreakerWord: 2,
     hvBreakerBit: 2,
     oltcWord: 2,
     oltcBit: 3,
-    ptFailRegister: 64,
+    ptFailRegister: 63,
     // Placeholder seed offsets, same as every other field here - independently
     // editable in Settings per device.
-    annAlarmWord1: 1,
-    annAlarmWord2: 3,
-    annAckWord1: 4,
-    annAckWord2: 5,
-    annHooterRegister: 6,
-    annMuteRegister: 7,
-    annMuteWriteRegister: 7,
+    annAlarmWord1: 0,
+    annAlarmWord2: 1,
+    annAckWord1: 2,
+    annAckWord2: 3,
+    annHooterRegister: 60,
+    annMuteRegister: 59,
+    annMuteWriteRegister: 59,
+    avrModeWriteRegister: 44,
+    tapRaiseWriteRegister: 45,
+    tapLowerWriteRegister: 46,
+    controlFailResetWriteRegister: 66,
+    avrStatusWord: 9,
   },
 };
 
@@ -122,12 +143,16 @@ export interface DashboardReadings {
   wtiTemperature: number | null;
   wtiTemperatureMax: number | null;
   mog: number | null;
-  tapPosition: number | null;
+  tapPosition: number | 'open' | null;
   tapPositionMax: number | null;
   tapCount: number | null;
-  ptVoltage: number | null;
-  actualPtVoltage: number | null;
-  operationMode: number | null;
+  // 'open' mirrors the legacy UI's literal "Open" text for an out-of-range/
+  // disconnected PT voltage reading - distinct from `null` (read failed
+  // entirely), so the UI can show "Open" specifically rather than generic
+  // "N/A".
+  ptVoltage: number | 'open' | null;
+  actualPtVoltage: number | 'open' | null;
+  operationMode: OperationMode | null;
   lvBreakerActive: boolean | null;
   hvBreakerActive: boolean | null;
   oltcLocal: boolean | null;
@@ -143,6 +168,16 @@ export interface DashboardReadings {
   // whether the Mute control shows, matching Btn_Mute's Visible toggling.
   hooterActive: boolean | null;
   muteVisible: boolean | null;
+  // AVR status word (mirrors double_byte(9)) - avrModeIsAuto reads back the
+  // same register the AVR Auto/Manual toggle writes to; the rest are
+  // read-only indicator lights in the legacy UI (IndiTapRaise/IndiTaplow/
+  // UnderVolt/OverVolt), never clicked.
+  avrModeIsAuto: boolean | null;
+  afrActive: boolean | null;
+  raiseRelayActive: boolean | null;
+  lowerRelayActive: boolean | null;
+  overVoltActive: boolean | null;
+  underVoltActive: boolean | null;
 }
 
 // Signed 16-bit correction: a Modbus holding register is unsigned (0-65535)
@@ -171,30 +206,44 @@ function readMaxTemperature(raw: number | null): number | null {
 }
 
 // Tap position is only valid while 0 < position <= tapMax and position is
-// not the "open"/invalid sentinel 32767.
-function readTapPosition(rawPosition: number | null, rawMax: number | null): number | null {
+// not the "open"/invalid sentinel 32767 - invalid shows the legacy UI's
+// literal "Open" text, not a generic unavailable state.
+function readTapPosition(rawPosition: number | null, rawMax: number | null): number | 'open' | null {
   if (rawPosition === null) return null;
-  if (rawPosition <= 0 || rawPosition === 32767) return null;
-  if (rawMax !== null && rawPosition > rawMax) return null;
+  if (rawPosition <= 0 || rawPosition === 32767) return 'open';
+  if (rawMax !== null && rawPosition > rawMax) return 'open';
   return rawPosition;
 }
 
-// PT Voltage: valid only in (4000, 15000), then /100.
-function readPtVoltage(raw: number | null): number | null {
+// PT Voltage: valid only in (4000, 15000), then /100 - out of range shows
+// the legacy UI's literal "Open" text, not a generic unavailable state.
+function readPtVoltage(raw: number | null): number | 'open' | null {
   if (raw === null) return null;
-  if (raw <= 4000 || raw >= 15000) return null;
+  if (raw <= 4000 || raw >= 15000) return 'open';
   return Math.round((raw / 100) * 100) / 100;
 }
 
 // Actual PT Voltage: valid when > 4000 and not one of the sentinel codes
 // used for "not applicable"/error states; scaled /1000 (TR1's scaling in
 // the source - TR2 used /10, a genuine inconsistency in the legacy app;
-// /1000 was chosen as the canonical default per product decision).
+// /1000 was chosen as the canonical default per product decision). Every
+// other case (sentinel match or <=4000) shows "Open", same as PT Voltage.
 const ACTUAL_PT_VOLTAGE_SENTINELS = new Set([32767, 32766, 32765]);
-function readActualPtVoltage(raw: number | null): number | null {
+function readActualPtVoltage(raw: number | null): number | 'open' | null {
   if (raw === null) return null;
-  if (raw <= 4000 || ACTUAL_PT_VOLTAGE_SENTINELS.has(raw)) return null;
+  if (raw <= 4000 || ACTUAL_PT_VOLTAGE_SENTINELS.has(raw)) return 'open';
   return Math.round((raw / 1000) * 10) / 10;
+}
+
+// Mode Display (mirrors double_byte(43)): 4 = Off, 1 = Master, 2 = Follower,
+// anything else (3, per Form1.txt) = Independent.
+export type OperationMode = 'Off' | 'Master' | 'Follower' | 'Independent';
+function readOperationMode(raw: number | null): OperationMode | null {
+  if (raw === null) return null;
+  if (raw === 4) return 'Off';
+  if (raw === 1) return 'Master';
+  if (raw === 2) return 'Follower';
+  return 'Independent';
 }
 
 function readBit(word: number | null, bit: number): boolean | null {
@@ -223,6 +272,8 @@ export function mapRegistersToReadings(
   const annAckWord2 = get(offsets.annAckWord2);
   const hooterRaw = get(offsets.annHooterRegister);
   const muteRaw = get(offsets.annMuteRegister);
+  const avrModeRaw = get(offsets.avrModeWriteRegister);
+  const avrStatusWord = get(offsets.avrStatusWord);
 
   const decodeAnnunciationWords = (word1: number | null, word2: number | null): (boolean | null)[] | null => {
     if (registers === null) return null;
@@ -240,7 +291,7 @@ export function mapRegistersToReadings(
     tapCount: get(offsets.tapCount),
     ptVoltage: readPtVoltage(get(offsets.ptVoltage)),
     actualPtVoltage: readActualPtVoltage(get(offsets.actualPtVoltage)),
-    operationMode: get(offsets.operationMode),
+    operationMode: readOperationMode(get(offsets.operationMode)),
     lvBreakerActive: readBit(lvBreakerWord, offsets.lvBreakerBit),
     hvBreakerActive: readBit(hvBreakerWord, offsets.hvBreakerBit),
     // oltcBit: 0 = Local, 1 = Remote in the source, so "Local" is the
@@ -252,5 +303,11 @@ export function mapRegistersToReadings(
     annAckWords: [annAckWord1, annAckWord2],
     hooterActive: hooterRaw === null ? null : hooterRaw !== 0,
     muteVisible: muteRaw === null ? null : muteRaw !== 0,
+    avrModeIsAuto: avrModeRaw === null ? null : avrModeRaw === 1,
+    afrActive: readBit(avrStatusWord, 0),
+    raiseRelayActive: readBit(avrStatusWord, 1),
+    lowerRelayActive: readBit(avrStatusWord, 2),
+    overVoltActive: readBit(avrStatusWord, 6),
+    underVoltActive: readBit(avrStatusWord, 7),
   };
 }

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
 import { mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
-import { readTransformerRegistersAsync } from '../slice';
+import { readTransformerRegistersAsync, writeRegisterAsync } from '../slice';
 import { useValueFlash } from '../hooks/useValueFlash';
 import { useHistory } from '../hooks/useHistory';
 import { Sparkline } from './Sparkline';
@@ -16,12 +16,6 @@ const TEMP_MIN_C = 20;
 const TEMP_MAX_C = 90;
 
 const POLL_INTERVAL_MS = 1000;
-
-// Placeholder for AVR/relay/mute controls - FC06 (Write Single Register)
-// hasn't been implemented yet, so these render but don't send anything.
-const NOT_IMPLEMENTED = () => {
-  /* needs FC06 write support */
-};
 
 function ReadingTile({
   label,
@@ -182,12 +176,13 @@ function TapPositionRow({
   max,
   unavailable,
 }: {
-  position: number | null;
+  position: number | 'open' | null;
   max: number | null;
   unavailable?: boolean;
 }) {
   const flashing = useValueFlash(position);
   const dotCount = max !== null && max > 0 && max <= 20 ? max : null;
+  const numericPosition = typeof position === 'number' ? position : null;
 
   return (
     <div
@@ -198,13 +193,13 @@ function TapPositionRow({
         <span
           className={`font-mono tabular-nums text-sm font-semibold transition-colors duration-300 ${unavailable ? 'text-status-critical/60' : 'text-surface-900'}`}
         >
-          {unavailable || position === null ? 'N/A' : position}
+          {unavailable || position === null ? 'N/A' : position === 'open' ? 'Open' : position}
         </span>
       </div>
       {dotCount !== null && (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {Array.from({ length: dotCount }, (_, i) => {
-            const filled = !unavailable && position !== null && i < position;
+            const filled = !unavailable && numericPosition !== null && i < numericPosition;
             return (
               <span
                 key={i}
@@ -221,10 +216,12 @@ function TapPositionRow({
 function ActionButton({
   children,
   tone = 'neutral',
+  disabled,
   onClick,
 }: {
   children: ReactNode;
   tone?: 'neutral' | 'primary' | 'good' | 'critical';
+  disabled?: boolean;
   onClick: () => void;
 }) {
   const toneStyles: Record<string, string> = {
@@ -237,7 +234,8 @@ function ActionButton({
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-2 text-xs font-semibold rounded-md transition ${toneStyles[tone]}`}
+      disabled={disabled}
+      className={`px-3 py-2 text-xs font-semibold rounded-md transition disabled:opacity-50 disabled:pointer-events-none ${toneStyles[tone]}`}
     >
       {children}
     </button>
@@ -275,6 +273,7 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   const dispatch = useAppDispatch();
   const readingKey = `${trId}:${device.id}`;
   const readState = useAppSelector((state) => state.dashboard.readingsByTrId[readingKey]);
+  const writesByKey = useAppSelector((state) => state.dashboard.writesByKey);
   const { startAddress, count, offsets } = device.registerConfig;
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -301,6 +300,27 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   const readings = mapRegistersToReadings(readState?.registers ?? null, offsets);
   const isByteCountMismatch = readState?.errorMessage?.includes('Unexpected byte count') ?? false;
   const hasReadError = Boolean(readState?.errorMessage);
+
+  // Mirrors Btn_AvrAuto/Btn_TapRaise/Btn_TapLow/Btn_CfReset_Click: each is
+  // confirmation-gated in the legacy app before writing (role-gating isn't
+  // ported since this app has no role system yet).
+  const writeAvrControl = (key: string, confirmMessage: string, offset: number, value: number) => {
+    if (!window.confirm(confirmMessage)) return;
+    dispatch(
+      writeRegisterAsync({
+        key: `${trId}:${device.id}:${key}`,
+        clientId,
+        slaveId: device.slaveId,
+        address: startAddress + offset,
+        value,
+      })
+    );
+  };
+
+  const avrModeKey = `${trId}:${device.id}:avr-mode`;
+  const tapRaiseKey = `${trId}:${device.id}:tap-raise`;
+  const tapLowerKey = `${trId}:${device.id}:tap-lower`;
+  const cfResetKey = `${trId}:${device.id}:cf-reset`;
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
@@ -393,44 +413,78 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
         <section className="bg-surface-0 rounded-lg border border-surface-200 px-4 py-1 card-hover">
           <StatValue
             label="PT Voltage"
-            value={readings.ptVoltage === null ? '—' : `${readings.ptVoltage} V`}
+            value={readings.ptVoltage === null ? '—' : readings.ptVoltage === 'open' ? 'Open' : `${readings.ptVoltage} V`}
             unavailable={hasReadError}
             icon={ROW_ICONS.ptVoltage}
           />
           <StatValue
             label="Actual PT Voltage"
-            value={readings.actualPtVoltage === null ? '—' : `${readings.actualPtVoltage} V`}
+            value={
+              readings.actualPtVoltage === null
+                ? '—'
+                : readings.actualPtVoltage === 'open'
+                  ? 'Open'
+                  : `${readings.actualPtVoltage} V`
+            }
             unavailable={hasReadError}
             icon={ROW_ICONS.actualPtVoltage}
           />
         </section>
       </div>
 
-      {/* AVR controls */}
+      {/* AVR controls - each writes a real register via FC06, mirroring
+          Btn_AvrAuto/Btn_TapRaise/Btn_TapLow/Btn_CfReset_Click */}
       <section className="bg-surface-0 rounded-lg border border-surface-200 p-4 space-y-3 animate-panel-enter stagger-3 card-hover">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">AVR Mode</p>
         <div className="flex flex-wrap gap-2">
-          <ActionButton onClick={NOT_IMPLEMENTED}>Manual</ActionButton>
-          <ActionButton onClick={NOT_IMPLEMENTED}>Tap Lower</ActionButton>
-          <ActionButton onClick={NOT_IMPLEMENTED}>Tap Raise</ActionButton>
-        </div>
-        <div className="flex flex-wrap gap-2 pt-1">
-          <ActionButton tone="critical" onClick={NOT_IMPLEMENTED}>
-            Lower Relay On
+          <ActionButton
+            tone="primary"
+            disabled={writesByKey[avrModeKey]?.isWriting}
+            onClick={() =>
+              writeAvrControl(
+                'avr-mode',
+                readings.avrModeIsAuto
+                  ? 'Switch AVR mode to MANUAL?'
+                  : 'Switch AVR mode to AUTO?',
+                offsets.avrModeWriteRegister,
+                readings.avrModeIsAuto ? 0 : 1
+              )
+            }
+          >
+            AVR Mode: {readings.avrModeIsAuto === null ? '—' : readings.avrModeIsAuto ? 'AUTO' : 'MANUAL'}
           </ActionButton>
-          <ActionButton onClick={NOT_IMPLEMENTED}>Control Fail Reset</ActionButton>
-          <ActionButton tone="critical" onClick={NOT_IMPLEMENTED}>
-            Raise Relay On
+          <ActionButton
+            disabled={writesByKey[tapRaiseKey]?.isWriting}
+            onClick={() => writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', offsets.tapRaiseWriteRegister, 1)}
+          >
+            Tap Raise
+          </ActionButton>
+          <ActionButton
+            disabled={writesByKey[tapLowerKey]?.isWriting}
+            onClick={() => writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', offsets.tapLowerWriteRegister, 1)}
+          >
+            Tap Lower
+          </ActionButton>
+          <ActionButton
+            disabled={writesByKey[cfResetKey]?.isWriting}
+            onClick={() => writeAvrControl('cf-reset', 'Are you sure you want to Reset?', offsets.controlFailResetWriteRegister, 0)}
+          >
+            Control Fail Reset
           </ActionButton>
         </div>
       </section>
 
-      {/* Status - bit-decoded from the configured breaker/OLTC/PT-fail registers */}
+      {/* Status - bit-decoded from the configured breaker/OLTC/PT-fail/AVR registers */}
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3 animate-panel-enter stagger-4">
         <StatusChip label="LV Circuit Breaker" active={hasReadError ? null : readings.lvBreakerActive} />
         <StatusChip label="HV Circuit Breaker" active={hasReadError ? null : readings.hvBreakerActive} />
         <StatusChip label="PT Fail" active={hasReadError ? null : readings.ptFailActive} />
         <StatusChip label="OLTC Local" active={hasReadError ? null : readings.oltcLocal} />
+        <StatusChip label="AFR" active={hasReadError ? null : readings.afrActive} />
+        <StatusChip label="Raise Relay" active={hasReadError ? null : readings.raiseRelayActive} />
+        <StatusChip label="Lower Relay" active={hasReadError ? null : readings.lowerRelayActive} />
+        <StatusChip label="Over Volt" active={hasReadError ? null : readings.overVoltActive} />
+        <StatusChip label="Under Volt" active={hasReadError ? null : readings.underVoltActive} />
       </section>
 
       {settingsOpen && (
