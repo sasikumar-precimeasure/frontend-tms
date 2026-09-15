@@ -303,7 +303,10 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
 
   // Mirrors Btn_AvrAuto/Btn_TapRaise/Btn_TapLow/Btn_CfReset_Click: each is
   // confirmation-gated in the legacy app before writing (role-gating isn't
-  // ported since this app has no role system yet).
+  // ported since this app has no role system yet). Address is
+  // startAddress + offset, same convention as every other register in this
+  // app (offsets default to 43/44/45/65, landing on 40044/40045/40046/40066
+  // per Form1.txt given the default startAddress of 40001).
   const writeAvrControl = (key: string, confirmMessage: string, offset: number, value: number) => {
     if (!window.confirm(confirmMessage)) return;
     dispatch(
@@ -461,13 +464,17 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
           </ActionButton>
           <ActionButton
             disabled={writesByKey[tapLowerKey]?.isWriting}
-            onClick={() => writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', offsets.tapLowerWriteRegister, 1)}
+            onClick={() =>
+              writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', offsets.tapLowerWriteRegister, 1)
+            }
           >
             Tap Lower
           </ActionButton>
           <ActionButton
             disabled={writesByKey[cfResetKey]?.isWriting}
-            onClick={() => writeAvrControl('cf-reset', 'Are you sure you want to Reset?', offsets.controlFailResetWriteRegister, 0)}
+            onClick={() =>
+              writeAvrControl('cf-reset', 'Are you sure you want to Reset?', offsets.controlFailResetWriteRegister, 0)
+            }
           >
             Control Fail Reset
           </ActionButton>
