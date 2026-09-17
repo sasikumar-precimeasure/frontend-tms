@@ -90,10 +90,16 @@ export function AnnunciationPanel({
   // than writing a single-bit value, or every other tile's ack bit in that
   // same word would be clobbered. Mirrors lblAnnN_Click: only proceeds
   // while the ack bit is 1, then clears it and disables the tile locally.
-  const handleAcknowledge = (tileIndex: number, word: 1 | 2) => {
+  const handleAcknowledge = (tileIndex: number) => {
+    const tile = ANNUNCIATION_TILES[tileIndex];
+    const word = tile.word;
     const offset = word === 1 ? offsets.annAckWord1 : offsets.annAckWord2;
     const currentWord = (word === 1 ? ackWords[0] : ackWords[1]) ?? 0;
-    const bit = word === 1 ? tileIndex : tileIndex - 10;
+    // Use the tile's own declared bit position, not a re-derived index -
+    // word 2's tiles aren't a simple 0-based run (bit 0 for tile 10, bit 9
+    // for tile 11, per Form1.txt), so recomputing this from tileIndex was
+    // wrong for tile 11 and cleared the wrong bit entirely.
+    const bit = tile.bit;
     const newWord = currentWord & ~(1 << bit);
     const key = `${trId}:ann-ack:${word}`;
     const address = startAddress + offset;
@@ -203,7 +209,7 @@ export function AnnunciationPanel({
                 key={tile.label}
                 type="button"
                 disabled={!clickable || isWriting}
-                onClick={() => handleAcknowledge(i, tile.word)}
+                onClick={() => handleAcknowledge(i)}
                 title={clickable ? 'Click to acknowledge' : undefined}
                 className={`flex flex-col items-center justify-center gap-1 rounded-lg px-3 py-5 text-center text-xs font-semibold transition-opacity ${tone} ${pulse} ${clickable ? 'cursor-pointer hover:opacity-90' : 'cursor-default'} disabled:opacity-70`}
               >
