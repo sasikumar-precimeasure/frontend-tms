@@ -36,6 +36,31 @@ export const TmsAppLayout = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-reconnect on drop, not just on load: a read/write can discover the
+  // gateway's underlying TCP socket died mid-session (see ModbusClient.ts -
+  // a framing/timeout error tears the connection down since the byte stream
+  // can't be resynced), which flips a transformer's isConnected to false
+  // without the user touching anything. Poll every few seconds and retry
+  // connectTransformerAsync for any transformer that's down but has a saved
+  // IP and isn't already mid-connect-attempt - same thunk the manual
+  // Connect button uses, so status/error state stays consistent either way.
+  const transformersRef = useRef(transformers);
+  useEffect(() => {
+    transformersRef.current = transformers;
+  }, [transformers]);
+
+  useEffect(() => {
+    const RECONNECT_CHECK_MS = 5000;
+    const intervalId = setInterval(() => {
+      transformersRef.current
+        .filter((tr) => tr.ipAddress.trim() !== '' && !tr.isConnected && !tr.isConnecting)
+        .forEach((tr) => {
+          dispatch(connectTransformerAsync({ trId: tr.id, clientId: tr.clientId, ipAddress: tr.ipAddress, port: tr.port }));
+        });
+    }, RECONNECT_CHECK_MS);
+    return () => clearInterval(intervalId);
+  }, [dispatch]);
+
   return (
     <div className="h-screen flex bg-surface-100">
       {/*

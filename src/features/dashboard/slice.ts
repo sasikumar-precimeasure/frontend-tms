@@ -37,32 +37,40 @@ function extractErrorMessage(error: unknown): string {
 // Reads FC03 holding registers for one TR's linked gateway/slave (mirrors
 // ModbusClient.vb ReadRegisters); each TR panel polls this independently.
 export const readTransformerRegistersAsync = createAsyncThunk<
-  { trId: string; registers: number[] | null; errorMessage: string | null },
+  { trId: string; registers: number[] | null; errorMessage: string | null; isConnected: boolean },
   { trId: string; clientId: number; slaveId: number; startAddress: number; count: number },
   { extra: Dependencies }
 >('dashboard/readTransformerRegisters', async (request, { extra, rejectWithValue }) => {
   try {
     const modbus = extra.modbus();
     const result = await modbus.readHoldingRegistersUseCase.execute(request);
-    return { trId: request.trId, registers: result.registers, errorMessage: result.errorMessage };
+    return {
+      trId: request.trId,
+      registers: result.registers,
+      errorMessage: result.errorMessage,
+      isConnected: result.isConnected,
+    };
   } catch (error: unknown) {
-    return rejectWithValue({ trId: request.trId, message: extractErrorMessage(error) });
+    // No parseable error body at all (e.g. the gateway process itself is
+    // unreachable) - treat this the same as a confirmed disconnect, since
+    // there's no live socket to speak of either way.
+    return rejectWithValue({ trId: request.trId, message: extractErrorMessage(error), isConnected: false });
   }
 });
 
 // Writes a single register (mirrors ModbusClient.vb WriteSingleRegister / FC06) -
 // used by the annunciation panel to acknowledge an alarm on the device itself.
 export const writeRegisterAsync = createAsyncThunk<
-  { key: string; errorMessage: string | null },
+  { key: string; errorMessage: string | null; isConnected: boolean },
   { key: string; clientId: number; slaveId: number; address: number; value: number },
   { extra: Dependencies }
 >('dashboard/writeRegister', async (request, { extra, rejectWithValue }) => {
   try {
     const modbus = extra.modbus();
     const result = await modbus.writeSingleRegisterUseCase.execute(request);
-    return { key: request.key, errorMessage: result.errorMessage };
+    return { key: request.key, errorMessage: result.errorMessage, isConnected: result.isConnected };
   } catch (error: unknown) {
-    return rejectWithValue({ key: request.key, message: extractErrorMessage(error) });
+    return rejectWithValue({ key: request.key, message: extractErrorMessage(error), isConnected: false });
   }
 });
 

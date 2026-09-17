@@ -316,6 +316,13 @@ export class ModbusClient {
     const header = await this.readBytes(socket, 9, READ_TIMEOUT_MS);
     if (header.length !== 9) {
       console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - incomplete header [${toHex(header)}]`);
+      // A short/timed-out read leaves the byte stream permanently
+      // desynced (Modbus TCP has no resync marker) - every future
+      // request on this socket would also fail. Tear the connection down
+      // so isConnected goes false and the frontend's poll loop can detect
+      // it and reconnect, instead of retrying forever against a wedged
+      // socket.
+      this.disconnect();
       this.raiseErrorOccurred('Read: Incomplete response header', slaveId);
       throw new Error('Read: Incomplete response header');
     }
@@ -337,6 +344,10 @@ export class ModbusClient {
     if (byteCount !== count * 2) {
       const message = `Read: Unexpected byte count ${byteCount} for ${count} register(s)`;
       console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(header)}]`);
+      // Same reasoning as the incomplete-header case above: a malformed
+      // byteCount means the rest of the stream can't be trusted either -
+      // drop the connection rather than leaving a wedged socket behind.
+      this.disconnect();
       this.raiseErrorOccurred(message, slaveId);
       throw new Error(message);
     }
@@ -346,6 +357,7 @@ export class ModbusClient {
       console.log(
         `[Modbus:${this._clientId}] FC03 response tid=${tid} - incomplete data, got ${dataBytes.length}/${byteCount} bytes [${toHex(dataBytes)}]`
       );
+      this.disconnect();
       this.raiseErrorOccurred('Read: Incomplete data response', slaveId);
       throw new Error('Read: Incomplete data response');
     }
@@ -402,6 +414,7 @@ export class ModbusClient {
     const response = await this.readBytes(socket, 12, READ_TIMEOUT_MS);
     if (response.length < 12) {
       console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - incomplete response [${toHex(response)}]`);
+      this.disconnect();
       this.raiseErrorOccurred('WriteSingle: Incomplete response', slaveId);
       throw new Error('WriteSingle: Incomplete response');
     }

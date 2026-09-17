@@ -7,6 +7,7 @@ import type { Device2243OffsetMap } from '../../domain/entities/Device2243Regist
 import { DEFAULT_2243_REGISTER_CONFIG } from '../../domain/entities/Device2243RegisterMap';
 import type { Dependencies } from '../../app/dependencies';
 import { AxiosError } from 'axios';
+import { readTransformerRegistersAsync, writeRegisterAsync } from '../dashboard/slice';
 
 function cloneDefaultRegisterConfig() {
   return {
@@ -366,6 +367,50 @@ const connectionSettingsSlice = createSlice({
           tr.status = action.payload.status as Transformer['status'];
           tr.isConnected = action.payload.isConnected;
           tr.errorMessage = null;
+        }
+      })
+      // A read/write against a dead socket tells us the gateway's connection
+      // for this transformer's clientId dropped (ModbusClient disconnects
+      // itself on a framing/timeout error, since the byte stream can't be
+      // resynced) - mirror that into isConnected here so the auto-reconnect
+      // watcher in TmsAppLayout notices and retries, instead of leaving the
+      // UI stuck showing "connected" against a socket that's actually gone.
+      .addCase(readTransformerRegistersAsync.fulfilled, (state, action) => {
+        if (action.payload.isConnected) return;
+        const tr = state.transformers.find((t) => t.clientId === action.meta.arg.clientId);
+        if (tr && tr.isConnected) {
+          tr.isConnected = false;
+          tr.status = 'error';
+          tr.errorMessage = action.payload.errorMessage;
+        }
+      })
+      .addCase(readTransformerRegistersAsync.rejected, (state, action) => {
+        const payload = action.payload as { isConnected?: boolean; message?: string } | undefined;
+        if (payload?.isConnected !== false) return;
+        const tr = state.transformers.find((t) => t.clientId === action.meta.arg.clientId);
+        if (tr && tr.isConnected) {
+          tr.isConnected = false;
+          tr.status = 'error';
+          tr.errorMessage = payload.message ?? 'Read failed';
+        }
+      })
+      .addCase(writeRegisterAsync.fulfilled, (state, action) => {
+        if (action.payload.isConnected) return;
+        const tr = state.transformers.find((t) => t.clientId === action.meta.arg.clientId);
+        if (tr && tr.isConnected) {
+          tr.isConnected = false;
+          tr.status = 'error';
+          tr.errorMessage = action.payload.errorMessage;
+        }
+      })
+      .addCase(writeRegisterAsync.rejected, (state, action) => {
+        const payload = action.payload as { isConnected?: boolean; message?: string } | undefined;
+        if (payload?.isConnected !== false) return;
+        const tr = state.transformers.find((t) => t.clientId === action.meta.arg.clientId);
+        if (tr && tr.isConnected) {
+          tr.isConnected = false;
+          tr.status = 'error';
+          tr.errorMessage = payload.message ?? 'Write failed';
         }
       });
   },

@@ -105,10 +105,17 @@ app.get('/api/modbus/read/:clientId', async (req, res) => {
 
   try {
     const registers = await client.readHoldingRegisters(slaveId, startAddress, count);
-    res.json({ clientId, slaveId, startAddress, registers, errorMessage: null });
+    res.json({ clientId, slaveId, startAddress, registers, errorMessage: null, isConnected: client.isConnected });
   } catch (ex) {
     const message = lastError ?? (ex instanceof Error ? ex.message : String(ex));
-    res.status(502).json({ clientId, slaveId, startAddress, registers: null, errorMessage: message });
+    // isConnected reflects the client's state *after* the failed read - a
+    // framing/timeout error tears the socket down (see ModbusClient), so
+    // the frontend can tell "transient read error, still connected" apart
+    // from "connection actually dropped, go reconnect" instead of retrying
+    // forever against a dead socket.
+    res
+      .status(502)
+      .json({ clientId, slaveId, startAddress, registers: null, errorMessage: message, isConnected: client.isConnected });
   } finally {
     offError();
   }
@@ -131,10 +138,10 @@ app.post('/api/modbus/write', async (req, res) => {
 
   try {
     await client.writeSingleRegister(slaveId, address, value);
-    res.json({ clientId, address, value, errorMessage: null });
+    res.json({ clientId, address, value, errorMessage: null, isConnected: client.isConnected });
   } catch (ex) {
     const message = lastError ?? (ex instanceof Error ? ex.message : String(ex));
-    res.status(502).json({ clientId, address, value, errorMessage: message });
+    res.status(502).json({ clientId, address, value, errorMessage: message, isConnected: client.isConnected });
   } finally {
     offError();
   }

@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
-import type { RegisterOffsetMap, DashboardReadings } from '../../../domain/entities/TransformerRegisterMap';
+import type { RegisterOffsetMap } from '../../../domain/entities/TransformerRegisterMap';
 import { mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
 import type { Device2243RegisterConfig } from '../../../domain/entities/Device2243RegisterMap';
 import { map2243RegistersToReadings } from '../../../domain/entities/Device2243RegisterMap';
@@ -366,59 +366,15 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
 
   const isByteCountMismatch = readState?.errorMessage?.includes('Unexpected byte count') ?? false;
   const hasReadError = Boolean(readState?.errorMessage);
+  const is2243 = device.deviceType === '2243';
 
-  // 2243 has its own register layout and UI (OTI/WTI + Alarm/Trip Setpoint
-  // list, per Form1.txt's disp3()/disp4()) - genuinely different from
-  // IRTCC's, so it renders through its own component rather than branching
-  // deep inside this one.
-  if (device.deviceType === '2243') {
-    // SubDevice.deviceType/registerConfig aren't a true TS discriminated
-    // union (registerConfig's type isn't keyed off deviceType), so this
-    // check doesn't narrow the union - safe to cast here since we've just
-    // verified deviceType at runtime.
-    const config2243 = device.registerConfig as Device2243RegisterConfig;
-    const readings2243 = map2243RegistersToReadings(readState?.registers ?? null, config2243.offsets);
-    return (
-      <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-semibold text-surface-800">{device.name}</p>
-        </div>
-        {!isConnected && (
-          <div className="px-4 py-2.5 rounded-lg bg-surface-100 text-surface-500 text-sm font-medium">
-            Not connected. Connect this transformer in Settings to see live readings.
-          </div>
-        )}
-        {readState?.errorMessage && isByteCountMismatch && (
-          <div className="px-4 py-2.5 rounded-lg bg-status-critical-soft text-status-critical text-sm font-medium">
-            Device returned a different amount of data than requested — the register count in Settings for{' '}
-            {device.name} likely doesn&apos;t match this device. Readings below are unavailable until fixed.
-          </div>
-        )}
-        {readState?.errorMessage && !isByteCountMismatch && (
-          <div className="px-4 py-2.5 rounded-lg bg-status-critical-soft text-status-critical text-sm font-medium">
-            {readState.errorMessage}
-          </div>
-        )}
-        <Device2243Panel
-          trId={trId}
-          clientId={clientId}
-          slaveId={device.slaveId}
-          deviceId={device.id}
-          startAddress={config2243.startAddress}
-          offsets={config2243.offsets}
-          readings={readings2243}
-          unavailable={hasReadError}
-        />
-      </div>
-    );
-  }
-
-  // TS can't narrow the union from the `deviceType === '2243'` early return
-  // above (it returned inside an `if`, not via a discriminated-union guard
-  // clause TS tracks across the whole function) - safe in practice since
-  // that branch already handled every 2243 device.
-  const offsets = device.registerConfig.offsets as RegisterOffsetMap;
-  const readings = mapRegistersToReadings(readState?.registers ?? null, offsets);
+  // SubDevice.deviceType/registerConfig aren't a true TS discriminated union
+  // (registerConfig's type isn't keyed off deviceType), so this cast is safe
+  // only because of the is2243 runtime check - never read `offsets`/`readings`
+  // below when is2243 is true (see the 2243 render branch further down,
+  // which uses its own config2243/readings2243 instead).
+  const offsets = is2243 ? null : (device.registerConfig.offsets as RegisterOffsetMap);
+  const readings = mapRegistersToReadings(is2243 ? null : (readState?.registers ?? null), offsets ?? ({} as RegisterOffsetMap));
 
   const avrModeKey = `${trId}:${device.id}:avr-mode`;
   const tapRaiseKey = `${trId}:${device.id}:tap-raise`;
@@ -456,8 +412,12 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
     [dispatch, trId, device.id, clientId, device.slaveId]
   );
 
+  // offsets is only null on the 2243 path, which never renders the buttons
+  // that call these handlers (see the is2243 return below) - non-null here
+  // is safe in practice even though TS can't see that across the branch.
   const handleAvrModeToggle = useCallback(() => {
     const { readings: r, offsets: o } = latestRef.current;
+    if (!o) return;
     writeAvrControl(
       'avr-mode',
       r.avrModeIsAuto ? 'Switch AVR mode to MANUAL?' : 'Switch AVR mode to AUTO?',
@@ -469,21 +429,66 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   }, [writeAvrControl]);
 
   const handleTapRaise = useCallback(() => {
-    writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', latestRef.current.offsets.tapRaiseWriteRegister, 1);
+    const o = latestRef.current.offsets;
+    if (!o) return;
+    writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', o.tapRaiseWriteRegister, 1);
   }, [writeAvrControl]);
 
   const handleTapLower = useCallback(() => {
-    writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', latestRef.current.offsets.tapLowerWriteRegister, 1);
+    const o = latestRef.current.offsets;
+    if (!o) return;
+    writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', o.tapLowerWriteRegister, 1);
   }, [writeAvrControl]);
 
   const handleControlFailReset = useCallback(() => {
-    writeAvrControl(
-      'cf-reset',
-      'Are you sure you want to Reset?',
-      latestRef.current.offsets.controlFailResetWriteRegister,
-      0
-    );
+    const o = latestRef.current.offsets;
+    if (!o) return;
+    writeAvrControl('cf-reset', 'Are you sure you want to Reset?', o.controlFailResetWriteRegister, 0);
   }, [writeAvrControl]);
+
+  // 2243 has its own register layout and UI (OTI/WTI + Alarm/Trip Setpoint
+  // list, per Form1.txt's disp3()/disp4()) - genuinely different from
+  // IRTCC's, so it renders through its own component. This return happens
+  // after every hook above (rules-of-hooks requires the same hooks run every
+  // render regardless of device type) - the hooks' own values (offsets,
+  // readings, writeAvrControl, etc.) are simply unused on this path.
+  if (is2243) {
+    const config2243 = device.registerConfig as Device2243RegisterConfig;
+    const readings2243 = map2243RegistersToReadings(readState?.registers ?? null, config2243.offsets);
+    return (
+      <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-semibold text-surface-800">{device.name}</p>
+        </div>
+        {!isConnected && (
+          <div className="px-4 py-2.5 rounded-lg bg-surface-100 text-surface-500 text-sm font-medium">
+            Not connected. Connect this transformer in Settings to see live readings.
+          </div>
+        )}
+        {readState?.errorMessage && isByteCountMismatch && (
+          <div className="px-4 py-2.5 rounded-lg bg-status-critical-soft text-status-critical text-sm font-medium">
+            Device returned a different amount of data than requested — the register count in Settings for{' '}
+            {device.name} likely doesn&apos;t match this device. Readings below are unavailable until fixed.
+          </div>
+        )}
+        {readState?.errorMessage && !isByteCountMismatch && (
+          <div className="px-4 py-2.5 rounded-lg bg-status-critical-soft text-status-critical text-sm font-medium">
+            {readState.errorMessage}
+          </div>
+        )}
+        <Device2243Panel
+          trId={trId}
+          clientId={clientId}
+          slaveId={device.slaveId}
+          deviceId={device.id}
+          startAddress={config2243.startAddress}
+          offsets={config2243.offsets}
+          readings={readings2243}
+          unavailable={hasReadError}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">

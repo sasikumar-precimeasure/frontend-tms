@@ -35,6 +35,11 @@ export interface ModbusReadResult {
   startAddress: number;
   registers: number[] | null;
   errorMessage: string | null;
+  // The gateway's live socket state right after this read - a framing or
+  // timeout error tears the underlying connection down (unrecoverable byte
+  // stream desync), so this is how callers tell "transient error, still
+  // connected" apart from "connection actually dropped, needs reconnect."
+  isConnected: boolean;
 }
 
 // -- FC06: Write Single Register --
@@ -50,4 +55,5 @@ export interface ModbusWriteResult {
   address: number;
   value: number;
   errorMessage: string | null;
+  isConnected: boolean;
 }
