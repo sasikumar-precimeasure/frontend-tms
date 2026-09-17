@@ -63,7 +63,12 @@ export function AnnunciationPanel({
   // codebase already uses for reset-on-change state (see useValueFlash.ts) -
   // rather than an effect, since this isn't synchronizing with an external
   // system.
-  const [enabledByTile, setEnabledByTile] = useState<boolean[]>(() => ANNUNCIATION_TILES.map(() => false));
+  // Initialize from whatever's already active on first render (e.g. the
+  // drawer was opened while a fault was already alarming) - not just future
+  // transitions, since there's no "before mount" state to compare against.
+  const [enabledByTile, setEnabledByTile] = useState<boolean[]>(() =>
+    ANNUNCIATION_TILES.map((_, i) => active?.[i] ?? false)
+  );
   const [prevActive, setPrevActive] = useState(active);
   if (prevActive !== active) {
     setPrevActive(active);
