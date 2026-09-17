@@ -51,6 +51,42 @@ function resetLiveConnectionFields(transformers: Transformer[]): Transformer[] {
   }));
 }
 
+// One-time migration for state saved before deviceType/Device2243RegisterMap
+// existed: back then every sub-device (including ones named "... 2243")
+// used IRTCC's register shape - a real bug fixed alongside this migration.
+// Since old-shape data can't be told apart from a genuine IRTCC device by
+// its registerConfig alone (both look IRTCC-shaped), fall back to the name
+// containing "2243" (matching this app's own seed-data naming convention)
+// to decide which devices should be corrected to a fresh 2243 config.
+// Runs on every load (cheap, idempotent) rather than a versioned persist
+// key, so existing IPs/ports/names/other devices are preserved - only the
+// wrong-shaped register config is replaced.
+function migrateSubDevices(transformers: Transformer[]): Transformer[] {
+  return transformers.map((tr) => ({
+    ...tr,
+    subDevices: tr.subDevices.map((device) => {
+      const offsets = device.registerConfig?.offsets as unknown as Record<string, unknown> | undefined;
+      const alreadyShaped2243 = offsets ? 'otiAlarmSetpoint' in offsets : false;
+      const nameSuggests2243 = /2243/.test(device.name);
+
+      if (device.deviceType === '2243' && alreadyShaped2243) {
+        return device; // already correct, nothing to migrate
+      }
+      if (device.deviceType !== '2243' && !nameSuggests2243 && device.deviceType) {
+        return device; // a real, already-typed IRTCC (or other) device
+      }
+
+      const correctedType: DeviceType = device.deviceType === '2243' || nameSuggests2243 ? '2243' : 'irtcc';
+      const needsFreshConfig = correctedType === '2243' ? !alreadyShaped2243 : false;
+      return {
+        ...device,
+        deviceType: correctedType,
+        registerConfig: needsFreshConfig || !device.deviceType ? makeRegisterConfigForType(correctedType) : device.registerConfig,
+      };
+    }),
+  }));
+}
+
 function loadPersistedState(): PersistedState | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -59,7 +95,7 @@ function loadPersistedState(): PersistedState | null {
     const parsed = JSON.parse(raw) as Partial<PersistedState>;
     if (!Array.isArray(parsed.transformers) || parsed.transformers.length === 0) return null;
     return {
-      transformers: resetLiveConnectionFields(parsed.transformers as Transformer[]),
+      transformers: migrateSubDevices(resetLiveConnectionFields(parsed.transformers as Transformer[])),
       selectedTrId: typeof parsed.selectedTrId === 'string' ? parsed.selectedTrId : parsed.transformers[0].id,
       nextClientId: typeof parsed.nextClientId === 'number' ? parsed.nextClientId : parsed.transformers.length + 1,
     };
