@@ -94,16 +94,29 @@ export function AnnunciationPanel({
     const offset = word === 1 ? offsets.annAckWord1 : offsets.annAckWord2;
     const currentWord = (word === 1 ? ackWords[0] : ackWords[1]) ?? 0;
     const bit = word === 1 ? tileIndex : tileIndex - 10;
+    const newWord = currentWord & ~(1 << bit);
     const key = `${trId}:ann-ack:${word}`;
+    const address = startAddress + offset;
+    console.log(
+      `[Annunciation] Acknowledge "${ANNUNCIATION_TILES[tileIndex].label}" (tile ${tileIndex}, word ${word}, bit ${bit}): ` +
+        `address=${address} currentWord=${currentWord.toString(2).padStart(10, '0')} -> newWord=${newWord.toString(2).padStart(10, '0')}`
+    );
     dispatch(
       writeRegisterAsync({
         key,
         clientId,
         slaveId,
-        address: startAddress + offset,
-        value: currentWord & ~(1 << bit),
+        address,
+        value: newWord,
       })
-    );
+    )
+      .unwrap()
+      .then((result) => {
+        console.log(`[Annunciation] Acknowledge write for "${ANNUNCIATION_TILES[tileIndex].label}" resolved:`, result);
+      })
+      .catch((error) => {
+        console.log(`[Annunciation] Acknowledge write for "${ANNUNCIATION_TILES[tileIndex].label}" FAILED:`, error);
+      });
     setEnabledByTile((prev) => {
       const next = prev.slice();
       next[tileIndex] = false;
