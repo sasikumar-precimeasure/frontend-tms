@@ -1,5 +1,5 @@
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
-import type { DashboardReadings } from '../../../domain/entities/TransformerRegisterMap';
+import type { DashboardReadings, TransformerRegisterConfig } from '../../../domain/entities/TransformerRegisterMap';
 import { AnnunciationPanel } from './AnnunciationPanel';
 
 interface DevicePanelSettingsDrawerProps {
@@ -23,6 +23,12 @@ export function DevicePanelSettingsDrawer({
   unavailable,
   onClose,
 }: DevicePanelSettingsDrawerProps) {
+  // This drawer is only rendered from DevicePanel's IRTCC branch (2243 has
+  // no annunciation section), so registerConfig is always
+  // TransformerRegisterConfig at runtime here - cast since SubDevice's
+  // deviceType/registerConfig aren't a true TS discriminated union.
+  const irtccConfig = device.registerConfig as TransformerRegisterConfig;
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div aria-hidden onClick={onClose} className="absolute inset-0 bg-black/30" />
@@ -47,8 +53,8 @@ export function DevicePanelSettingsDrawer({
             trId={trId}
             clientId={clientId}
             slaveId={device.slaveId}
-            startAddress={device.registerConfig.startAddress}
-            offsets={device.registerConfig.offsets}
+            startAddress={irtccConfig.startAddress}
+            offsets={irtccConfig.offsets}
             active={readings.annunciation}
             acknowledged={readings.annunciationAck}
             ackWords={readings.annAckWords}

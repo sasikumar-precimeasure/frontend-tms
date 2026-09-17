@@ -2,13 +2,17 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
+import type { RegisterOffsetMap } from '../../../domain/entities/TransformerRegisterMap';
 import { mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
+import type { Device2243RegisterConfig } from '../../../domain/entities/Device2243RegisterMap';
+import { map2243RegistersToReadings } from '../../../domain/entities/Device2243RegisterMap';
 import { readTransformerRegistersAsync, writeRegisterAsync } from '../slice';
 import { useValueFlash } from '../hooks/useValueFlash';
 import { useHistory } from '../hooks/useHistory';
 import { Sparkline } from './Sparkline';
 import { TemperatureGauge } from './TemperatureGauge';
 import { DevicePanelSettingsDrawer } from './DevicePanelSettingsDrawer';
+import { Device2243Panel } from './Device2243Panel';
 
 // Rough operating band for the temperature fill bar - a purely visual cue,
 // not a real alarm threshold (those aren't wired up yet).
@@ -275,7 +279,7 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   const readingKey = `${trId}:${device.id}`;
   const readState = useAppSelector((state) => state.dashboard.readingsByTrId[readingKey]);
   const writesByKey = useAppSelector((state) => state.dashboard.writesByKey);
-  const { startAddress, count, offsets } = device.registerConfig;
+  const { startAddress, count } = device.registerConfig;
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
@@ -298,9 +302,61 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
     return () => clearInterval(intervalId);
   }, [readingKey, clientId, isConnected, device.slaveId, startAddress, count, dispatch]);
 
-  const readings = mapRegistersToReadings(readState?.registers ?? null, offsets);
   const isByteCountMismatch = readState?.errorMessage?.includes('Unexpected byte count') ?? false;
   const hasReadError = Boolean(readState?.errorMessage);
+
+  // 2243 has its own register layout and UI (OTI/WTI + Alarm/Trip Setpoint
+  // list, per Form1.txt's disp3()/disp4()) - genuinely different from
+  // IRTCC's, so it renders through its own component rather than branching
+  // deep inside this one.
+  if (device.deviceType === '2243') {
+    // SubDevice.deviceType/registerConfig aren't a true TS discriminated
+    // union (registerConfig's type isn't keyed off deviceType), so this
+    // check doesn't narrow the union - safe to cast here since we've just
+    // verified deviceType at runtime.
+    const config2243 = device.registerConfig as Device2243RegisterConfig;
+    const readings2243 = map2243RegistersToReadings(readState?.registers ?? null, config2243.offsets);
+    return (
+      <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-semibold text-surface-800">{device.name}</p>
+        </div>
+        {!isConnected && (
+          <div className="px-4 py-2.5 rounded-lg bg-surface-100 text-surface-500 text-sm font-medium">
+            Not connected. Connect this transformer in Settings to see live readings.
+          </div>
+        )}
+        {readState?.errorMessage && isByteCountMismatch && (
+          <div className="px-4 py-2.5 rounded-lg bg-status-critical-soft text-status-critical text-sm font-medium">
+            Device returned a different amount of data than requested — the register count in Settings for{' '}
+            {device.name} likely doesn&apos;t match this device. Readings below are unavailable until fixed.
+          </div>
+        )}
+        {readState?.errorMessage && !isByteCountMismatch && (
+          <div className="px-4 py-2.5 rounded-lg bg-status-critical-soft text-status-critical text-sm font-medium">
+            {readState.errorMessage}
+          </div>
+        )}
+        <Device2243Panel
+          trId={trId}
+          clientId={clientId}
+          slaveId={device.slaveId}
+          deviceId={device.id}
+          startAddress={config2243.startAddress}
+          offsets={config2243.offsets}
+          readings={readings2243}
+          unavailable={hasReadError}
+        />
+      </div>
+    );
+  }
+
+  // TS can't narrow the union from the `deviceType === '2243'` early return
+  // above (it returned inside an `if`, not via a discriminated-union guard
+  // clause TS tracks across the whole function) - safe in practice since
+  // that branch already handled every 2243 device.
+  const offsets = device.registerConfig.offsets as RegisterOffsetMap;
+  const readings = mapRegistersToReadings(readState?.registers ?? null, offsets);
 
   // Mirrors Btn_AvrAuto/Btn_TapRaise/Btn_TapLow/Btn_CfReset_Click: each is
   // confirmation-gated in the legacy app before writing (role-gating isn't

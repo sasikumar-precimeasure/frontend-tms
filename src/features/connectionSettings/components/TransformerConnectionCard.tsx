@@ -149,6 +149,9 @@ export const TransformerConnectionCard = ({ transformer }: TransformerConnection
               }
               className="w-16 px-2 py-1 text-sm font-mono border border-surface-300 rounded-md"
             />
+            <span className="px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide rounded-full bg-surface-100 text-surface-500">
+              {device.deviceType}
+            </span>
             <button
               onClick={() => dispatch(removeSubDevice({ trId: transformer.id, deviceId: device.id }))}
               className="text-xs text-surface-400 hover:text-status-critical"
@@ -158,12 +161,21 @@ export const TransformerConnectionCard = ({ transformer }: TransformerConnection
           </div>
         ))}
 
-        <button
-          onClick={() => dispatch(addSubDevice({ trId: transformer.id }))}
-          className="text-xs font-semibold text-primary hover:text-primary-700 mt-1"
-        >
-          + Add Device
-        </button>
+        <div className="flex items-center gap-2 mt-1">
+          <button
+            onClick={() => dispatch(addSubDevice({ trId: transformer.id, deviceType: 'irtcc' }))}
+            className="text-xs font-semibold text-primary hover:text-primary-700"
+          >
+            + Add IRTCC Device
+          </button>
+          <span className="text-surface-300">|</span>
+          <button
+            onClick={() => dispatch(addSubDevice({ trId: transformer.id, deviceType: '2243' }))}
+            className="text-xs font-semibold text-primary hover:text-primary-700"
+          >
+            + Add 2243 Device
+          </button>
+        </div>
       </div>
     </div>
   );

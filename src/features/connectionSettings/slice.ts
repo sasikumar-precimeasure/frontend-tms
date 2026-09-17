@@ -1,8 +1,10 @@
 import { createSlice, createAsyncThunk, nanoid } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
-import type { Transformer, SubDevice } from '../../domain/entities/ConnectionSettings';
+import type { DeviceType, Transformer, SubDevice } from '../../domain/entities/ConnectionSettings';
 import type { RegisterOffsetMap } from '../../domain/entities/TransformerRegisterMap';
 import { DEFAULT_REGISTER_CONFIG } from '../../domain/entities/TransformerRegisterMap';
+import type { Device2243OffsetMap } from '../../domain/entities/Device2243RegisterMap';
+import { DEFAULT_2243_REGISTER_CONFIG } from '../../domain/entities/Device2243RegisterMap';
 import type { Dependencies } from '../../app/dependencies';
 import { AxiosError } from 'axios';
 
@@ -12,6 +14,18 @@ function cloneDefaultRegisterConfig() {
     count: DEFAULT_REGISTER_CONFIG.count,
     offsets: { ...DEFAULT_REGISTER_CONFIG.offsets },
   };
+}
+
+function cloneDefault2243RegisterConfig() {
+  return {
+    startAddress: DEFAULT_2243_REGISTER_CONFIG.startAddress,
+    count: DEFAULT_2243_REGISTER_CONFIG.count,
+    offsets: { ...DEFAULT_2243_REGISTER_CONFIG.offsets },
+  };
+}
+
+function makeRegisterConfigForType(deviceType: DeviceType) {
+  return deviceType === '2243' ? cloneDefault2243RegisterConfig() : cloneDefaultRegisterConfig();
 }
 
 interface ConnectionSettingsState {
@@ -84,9 +98,9 @@ function makeDefaultState(): Pick<ConnectionSettingsState, 'transformers' | 'sel
       isConnecting: false,
       errorMessage: null,
       subDevices: [
-        { id: nanoid(), name: 'TR1 7.5 MVA IRTCC', enabled: true, slaveId: 1, registerConfig: cloneDefaultRegisterConfig() },
-        { id: nanoid(), name: 'TR1 7.5 MVA 2243', enabled: true, slaveId: 11, registerConfig: cloneDefaultRegisterConfig() },
-        { id: nanoid(), name: 'TR 1 Smart Breather', enabled: false, slaveId: 5, registerConfig: cloneDefaultRegisterConfig() },
+        { id: nanoid(), name: 'TR1 7.5 MVA IRTCC', enabled: true, slaveId: 1, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig() },
+        { id: nanoid(), name: 'TR1 7.5 MVA 2243', enabled: true, slaveId: 11, deviceType: '2243', registerConfig: cloneDefault2243RegisterConfig() },
+        { id: nanoid(), name: 'TR 1 Smart Breather', enabled: false, slaveId: 5, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig() },
       ],
     },
     {
@@ -100,8 +114,8 @@ function makeDefaultState(): Pick<ConnectionSettingsState, 'transformers' | 'sel
       isConnecting: false,
       errorMessage: null,
       subDevices: [
-        { id: nanoid(), name: 'TR2 7.5 MVA IRTCC', enabled: true, slaveId: 2, registerConfig: cloneDefaultRegisterConfig() },
-        { id: nanoid(), name: 'TR2 7.5 MVA 2243', enabled: true, slaveId: 22, registerConfig: cloneDefaultRegisterConfig() },
+        { id: nanoid(), name: 'TR2 7.5 MVA IRTCC', enabled: true, slaveId: 2, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig() },
+        { id: nanoid(), name: 'TR2 7.5 MVA 2243', enabled: true, slaveId: 22, deviceType: '2243', registerConfig: cloneDefault2243RegisterConfig() },
       ],
     },
   ];
@@ -210,15 +224,17 @@ const connectionSettingsSlice = createSlice({
       const tr = state.transformers.find((t) => t.id === action.payload.trId);
       if (tr) tr.errorMessage = null;
     },
-    addSubDevice: (state, action: PayloadAction<{ trId: string }>) => {
+    addSubDevice: (state, action: PayloadAction<{ trId: string; deviceType?: DeviceType }>) => {
       const tr = state.transformers.find((t) => t.id === action.payload.trId);
       if (tr) {
+        const deviceType = action.payload.deviceType ?? 'irtcc';
         const newDevice: SubDevice = {
           id: nanoid(),
-          name: 'New Device',
+          name: deviceType === '2243' ? 'New 2243 Device' : 'New Device',
           enabled: true,
           slaveId: 1,
-          registerConfig: cloneDefaultRegisterConfig(),
+          deviceType,
+          registerConfig: makeRegisterConfigForType(deviceType),
         };
         tr.subDevices.push(newDevice);
       }
@@ -263,12 +279,18 @@ const connectionSettingsSlice = createSlice({
     },
     updateSubDeviceRegisterOffset: (
       state,
-      action: PayloadAction<{ trId: string; deviceId: string; field: keyof RegisterOffsetMap; offset: number }>
+      action: PayloadAction<{
+        trId: string;
+        deviceId: string;
+        field: keyof RegisterOffsetMap | keyof Device2243OffsetMap;
+        offset: number;
+      }>
     ) => {
       const tr = state.transformers.find((t) => t.id === action.payload.trId);
       const device = tr?.subDevices.find((d) => d.id === action.payload.deviceId);
       if (device) {
-        device.registerConfig.offsets[action.payload.field] = action.payload.offset;
+        const offsets = device.registerConfig.offsets as Record<string, number>;
+        offsets[action.payload.field] = action.payload.offset;
       }
     },
   },

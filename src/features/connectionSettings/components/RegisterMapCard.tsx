@@ -1,9 +1,10 @@
 import { useAppDispatch } from '../../../app/store/hooks';
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
-import type { RegisterOffsetMap } from '../../../domain/entities/TransformerRegisterMap';
+import type { RegisterOffsetMap, TransformerRegisterConfig } from '../../../domain/entities/TransformerRegisterMap';
+import type { Device2243OffsetMap, Device2243RegisterConfig } from '../../../domain/entities/Device2243RegisterMap';
 import { updateSubDeviceReadConfig, updateSubDeviceRegisterOffset } from '../slice';
 
-const FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
+const IRTCC_FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
   otiTemperature: 'OTI Temperature',
   otiTemperatureMax: 'OTI Max',
   wtiTemperature: 'WTI Temperature',
@@ -39,9 +40,27 @@ const FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
 
 // Bit-position fields (0-15) are conceptually different from register
 // offsets - labeling both "Offset" would be misleading in the UI.
-const BIT_FIELDS: Set<keyof RegisterOffsetMap> = new Set(['lvBreakerBit', 'hvBreakerBit', 'oltcBit']);
+const IRTCC_BIT_FIELDS: Set<keyof RegisterOffsetMap> = new Set(['lvBreakerBit', 'hvBreakerBit', 'oltcBit']);
+const IRTCC_FIELD_ORDER = Object.keys(IRTCC_FIELD_LABELS) as (keyof RegisterOffsetMap)[];
 
-const FIELD_ORDER = Object.keys(FIELD_LABELS) as (keyof RegisterOffsetMap)[];
+const DEVICE_2243_FIELD_LABELS: Record<keyof Device2243OffsetMap, string> = {
+  otiTemperature: 'OTI Temperature',
+  wtiTemperature: 'WTI Temperature',
+  otiAlarmSetpoint: 'OTI Alarm Setpoint',
+  otiAlarmDiff: 'OTI Alarm Diff.',
+  otiTripSetpoint: 'OTI Trip Setpoint',
+  otiTripDiff: 'OTI Trip Diff.',
+  wtiAlarmSetpoint: 'WTI Alarm Setpoint',
+  wtiAlarmDiff: 'WTI Alarm Diff.',
+  wtiTripSetpoint: 'WTI Trip Setpoint',
+  wtiTripDiff: 'WTI Trip Diff.',
+  wtiFan1Setpoint: 'WTI Fan-1 Setpoint',
+  wtiFan1Diff: 'WTI Fan-1 Diff.',
+  wtiFan2Setpoint: 'WTI Fan-2 Setpoint',
+  wtiFan2Diff: 'WTI Fan-2 Diff.',
+  relayDelay: 'Relay Delay',
+};
+const DEVICE_2243_FIELD_ORDER = Object.keys(DEVICE_2243_FIELD_LABELS) as (keyof Device2243OffsetMap)[];
 
 interface RegisterMapCardProps {
   trId: string;
@@ -50,7 +69,14 @@ interface RegisterMapCardProps {
 
 export const RegisterMapCard = ({ trId, device }: RegisterMapCardProps) => {
   const dispatch = useAppDispatch();
-  const { startAddress, count, offsets } = device.registerConfig;
+  const { startAddress, count } = device.registerConfig;
+  const is2243 = device.deviceType === '2243';
+
+  // SubDevice.deviceType/registerConfig aren't a true TS discriminated
+  // union, so `is2243` above doesn't narrow registerConfig's type - safe to
+  // cast per-branch since deviceType is checked at runtime.
+  const irtccOffsets = !is2243 ? (device.registerConfig as TransformerRegisterConfig).offsets : null;
+  const offsets2243 = is2243 ? (device.registerConfig as Device2243RegisterConfig).offsets : null;
 
   return (
     <div className="bg-surface-0 rounded-lg border border-surface-200 overflow-hidden">
@@ -101,34 +127,59 @@ export const RegisterMapCard = ({ trId, device }: RegisterMapCardProps) => {
       </div>
 
       <div className="px-4 py-2">
-        {FIELD_ORDER.map((field) => {
-          const isBit = BIT_FIELDS.has(field);
-          return (
-            <div key={field} className="flex items-center justify-between gap-3 py-1.5">
-              <span className="text-sm text-surface-600">{FIELD_LABELS[field]}</span>
-              <div className="flex items-center gap-1.5">
-                <label className="text-xs font-medium text-surface-500">{isBit ? 'Bit' : 'Offset'}</label>
-                <input
-                  type="number"
-                  min={isBit ? 0 : undefined}
-                  max={isBit ? 15 : undefined}
-                  value={offsets[field]}
-                  onChange={(e) =>
-                    dispatch(
-                      updateSubDeviceRegisterOffset({
-                        trId,
-                        deviceId: device.id,
-                        field,
-                        offset: Number(e.target.value) || 0,
-                      })
-                    )
-                  }
-                  className="w-16 px-2 py-1 text-sm font-mono border border-surface-300 rounded-md"
-                />
+        {is2243 && offsets2243
+          ? DEVICE_2243_FIELD_ORDER.map((field) => (
+              <div key={field} className="flex items-center justify-between gap-3 py-1.5">
+                <span className="text-sm text-surface-600">{DEVICE_2243_FIELD_LABELS[field]}</span>
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs font-medium text-surface-500">Offset</label>
+                  <input
+                    type="number"
+                    value={offsets2243[field]}
+                    onChange={(e) =>
+                      dispatch(
+                        updateSubDeviceRegisterOffset({
+                          trId,
+                          deviceId: device.id,
+                          field,
+                          offset: Number(e.target.value) || 0,
+                        })
+                      )
+                    }
+                    className="w-16 px-2 py-1 text-sm font-mono border border-surface-300 rounded-md"
+                  />
+                </div>
               </div>
-            </div>
-          );
-        })}
+            ))
+          : irtccOffsets &&
+            IRTCC_FIELD_ORDER.map((field) => {
+              const isBit = IRTCC_BIT_FIELDS.has(field);
+              return (
+                <div key={field} className="flex items-center justify-between gap-3 py-1.5">
+                  <span className="text-sm text-surface-600">{IRTCC_FIELD_LABELS[field]}</span>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-xs font-medium text-surface-500">{isBit ? 'Bit' : 'Offset'}</label>
+                    <input
+                      type="number"
+                      min={isBit ? 0 : undefined}
+                      max={isBit ? 15 : undefined}
+                      value={irtccOffsets[field]}
+                      onChange={(e) =>
+                        dispatch(
+                          updateSubDeviceRegisterOffset({
+                            trId,
+                            deviceId: device.id,
+                            field,
+                            offset: Number(e.target.value) || 0,
+                          })
+                        )
+                      }
+                      className="w-16 px-2 py-1 text-sm font-mono border border-surface-300 rounded-md"
+                    />
+                  </div>
+                </div>
+              );
+            })}
       </div>
     </div>
   );
