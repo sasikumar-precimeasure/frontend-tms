@@ -34,6 +34,13 @@ export interface RegisterOffsetMap {
   // the first 10 tiles, annAlarmWord2 bits 0 and 9 map to the last 2.
   annAlarmWord1: number;
   annAlarmWord2: number;
+  // Ack words (mirrors double_byte(3)/(4), "ALARM ACK"/"ALARM ACK 2") - a
+  // bit of 1 here means that tile is unacknowledged and should blink
+  // (UpdateAlarm toggles Red/Silver on Blink.Tick while the ack bit is 1);
+  // 0 means acknowledged/quiet. Separate from the alarm word above, which
+  // only sets the tile's base red/green color and is never written to.
+  annAckWord1: number;
+  annAckWord2: number;
   // Hooter Sat (mirrors double_byte(61)): a direct value, not bit-decoded -
   // 0 = OFF, 1 = ON. Rendered as its own annunciation tile.
   annHooterRegister: number;
@@ -100,6 +107,8 @@ export const DEFAULT_REGISTER_CONFIG: TransformerRegisterConfig = {
     // editable in Settings per device.
     annAlarmWord1: 0,
     annAlarmWord2: 1,
+    annAckWord1: 2,
+    annAckWord2: 3,
     annHooterRegister: 60,
     annMuteRegister: 59,
     annMuteWriteRegister: 59,
@@ -158,12 +167,16 @@ export interface DashboardReadings {
   oltcLocal: boolean | null;
   ptFailActive: boolean | null;
   // Index-aligned with ANNUNCIATION_TILES; null only when the whole read failed.
+  // annunciation (alarm word) sets each tile's base color/text; annunciationAck
+  // (ack word) drives blink + clickability - a tile blinks and is
+  // acknowledgeable while its ack bit is 1, independent of the alarm bit.
   annunciation: (boolean | null)[] | null;
-  // Raw alarm words, needed to read-modify-write a single bit via FC06 when
-  // clearing an active alarm (acknowledge = write 0 to that bit directly,
-  // there is no separate device-side ack register per Form1.txt) without
-  // clobbering the other bits already set in that register.
-  annAlarmWords: [number | null, number | null];
+  annunciationAck: (boolean | null)[] | null;
+  // Raw ack words, needed to read-modify-write a single bit via FC06 when
+  // acknowledging (clearing that bit in the ack word - the alarm word
+  // itself is never written) without clobbering the other bits already set
+  // in that register.
+  annAckWords: [number | null, number | null];
   // Hooter Sat / Mute Sat (direct values, mirrors double_byte(61)/(60)) -
   // hooterActive renders as its own annunciation tile; muteVisible gates
   // whether the Mute control shows, matching Btn_Mute's Visible toggling.
@@ -272,6 +285,8 @@ export function mapRegistersToReadings(
 
   const annAlarmWord1 = get(offsets.annAlarmWord1);
   const annAlarmWord2 = get(offsets.annAlarmWord2);
+  const annAckWord1 = get(offsets.annAckWord1);
+  const annAckWord2 = get(offsets.annAckWord2);
   const hooterRaw = get(offsets.annHooterRegister);
   const muteRaw = get(offsets.annMuteRegister);
   const avrModeRaw = get(offsets.avrModeWriteRegister);
@@ -302,7 +317,8 @@ export function mapRegistersToReadings(
     oltcLocal: oltcWord === null ? null : !readBit(oltcWord, offsets.oltcBit),
     ptFailActive: ptFailRaw === null ? null : ptFailRaw === 1,
     annunciation: decodeAnnunciationWords(annAlarmWord1, annAlarmWord2),
-    annAlarmWords: [annAlarmWord1, annAlarmWord2],
+    annunciationAck: decodeAnnunciationWords(annAckWord1, annAckWord2),
+    annAckWords: [annAckWord1, annAckWord2],
     hooterActive: hooterRaw === null ? null : hooterRaw !== 0,
     muteVisible: muteRaw === null ? null : muteRaw !== 0,
     // double_byte(44) = 0 -> AUTO, else -> MANUAL (Form1.txt line ~4495).

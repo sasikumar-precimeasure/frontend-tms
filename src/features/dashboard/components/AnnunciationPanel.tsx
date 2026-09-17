@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import { ANNUNCIATION_TILES } from '../../../domain/entities/TransformerRegisterMap';
 import type { RegisterOffsetMap } from '../../../domain/entities/TransformerRegisterMap';
@@ -10,7 +11,8 @@ interface AnnunciationPanelProps {
   startAddress: number;
   offsets: RegisterOffsetMap;
   active: (boolean | null)[] | null;
-  alarmWords: [number | null, number | null];
+  acknowledged: (boolean | null)[] | null;
+  ackWords: [number | null, number | null];
   hooterActive: boolean | null;
   muteVisible: boolean | null;
   unavailable?: boolean;
@@ -21,11 +23,23 @@ interface AnnunciationPanelProps {
 // separate from the alarm/trip grid, same as Form1.txt renders it as its own
 // control rather than a grid tile) with an adjacent Mute control (shown only
 // while Mute Sat is active, mirrors Btn_Mute), followed by the 12 fixed
-// alarm/trip tiles. Red "<label> ON" and blinking while the bit is 1, green
-// "<label> OFF" while 0. Clicking an active tile clears its bit directly (a
-// plain write of 0 to that bit position in the alarm word) - there is no
-// separate device-side ack register in Form1.txt, so "acknowledge" here
-// means resetting the fault itself.
+// alarm/trip tiles.
+//
+// Two separate words drive each tile, ported directly from Form1.txt's main
+// poll handler, Blink_Tick/UpdateAlarm, and lblAnnN_Click:
+// - ALARM word: sets the base red "ON" / green "OFF" color+text. A tile's
+//   clickable ("Enabled") state is a genuine persistent flag in the legacy
+//   app - set True the moment the alarm bit goes active, left untouched
+//   (not reset) when the alarm clears, and set False only by clicking -
+//   tracked here as real component state (`enabledByTile`) for the same
+//   reason, rather than derived fresh from each poll.
+// - ACK word: UpdateAlarm's blink toggle (Red<->Silver) fires purely off
+//   this bit (`alarmValue >= 1`), with NO dependency on the alarm word - a
+//   tile can blink while showing green if its fault cleared but it hasn't
+//   been acknowledged yet. Clicking is gated on the ack bit being 1
+//   (lblAnnN_Click's `If AnnAck(n) >= 1`); it clears that bit and writes
+//   the updated ack word back via FC06 - the alarm word itself is never
+//   touched by a click.
 export function AnnunciationPanel({
   trId,
   clientId,
@@ -33,7 +47,8 @@ export function AnnunciationPanel({
   startAddress,
   offsets,
   active,
-  alarmWords,
+  acknowledged,
+  ackWords,
   hooterActive,
   muteVisible,
   unavailable,
@@ -41,16 +56,40 @@ export function AnnunciationPanel({
   const dispatch = useAppDispatch();
   const writesByKey = useAppSelector((state) => state.dashboard.writesByKey);
 
-  // FC06 overwrites the whole register, so clearing one tile's bit must
-  // read-modify-write the current alarm word (from the last poll) rather
-  // than writing a single-bit value, or every other tile's bit in that same
-  // word would be clobbered. Only sent while the bit is actually 1 - a
-  // tile already at 0 has nothing to clear.
-  const handleClear = (tileIndex: number, word: 1 | 2) => {
-    const offset = word === 1 ? offsets.annAlarmWord1 : offsets.annAlarmWord2;
-    const currentWord = (word === 1 ? alarmWords[0] : alarmWords[1]) ?? 0;
+  // Mirrors the legacy label's persistent Enabled flag: True the moment the
+  // alarm bit transitions 0->1, otherwise left as-is (including when the
+  // alarm bit later drops back to 0), False only once clicked. Detected via
+  // a previous-value comparison during render - the sanctioned pattern this
+  // codebase already uses for reset-on-change state (see useValueFlash.ts) -
+  // rather than an effect, since this isn't synchronizing with an external
+  // system.
+  const [enabledByTile, setEnabledByTile] = useState<boolean[]>(() => ANNUNCIATION_TILES.map(() => false));
+  const [prevActive, setPrevActive] = useState(active);
+  if (prevActive !== active) {
+    setPrevActive(active);
+    const next = enabledByTile.slice();
+    let changed = false;
+    ANNUNCIATION_TILES.forEach((_, i) => {
+      const wasActive = prevActive?.[i] ?? false;
+      const isActiveNow = active?.[i] ?? false;
+      if (!wasActive && isActiveNow && !next[i]) {
+        next[i] = true;
+        changed = true;
+      }
+    });
+    if (changed) setEnabledByTile(next);
+  }
+
+  // FC06 overwrites the whole register, so acknowledging one tile's bit
+  // must read-modify-write the current ack word (from the last poll) rather
+  // than writing a single-bit value, or every other tile's ack bit in that
+  // same word would be clobbered. Mirrors lblAnnN_Click: only proceeds
+  // while the ack bit is 1, then clears it and disables the tile locally.
+  const handleAcknowledge = (tileIndex: number, word: 1 | 2) => {
+    const offset = word === 1 ? offsets.annAckWord1 : offsets.annAckWord2;
+    const currentWord = (word === 1 ? ackWords[0] : ackWords[1]) ?? 0;
     const bit = word === 1 ? tileIndex : tileIndex - 10;
-    const key = `${trId}:ann-clear:${word}`;
+    const key = `${trId}:ann-ack:${word}`;
     dispatch(
       writeRegisterAsync({
         key,
@@ -60,6 +99,11 @@ export function AnnunciationPanel({
         value: currentWord & ~(1 << bit),
       })
     );
+    setEnabledByTile((prev) => {
+      const next = prev.slice();
+      next[tileIndex] = false;
+      return next;
+    });
   };
 
   // Mirrors Btn_Mute_Click: WriteSingleRegister(slaveId, muteWriteAddress, 0)
@@ -117,9 +161,16 @@ export function AnnunciationPanel({
         <div className="grid grid-cols-3 gap-2">
           {ANNUNCIATION_TILES.map((tile, i) => {
             const isActive = unavailable ? null : (active?.[i] ?? null);
-            const writeKey = `${trId}:ann-clear:${tile.word}`;
+            const isUnacked = unavailable ? null : (acknowledged?.[i] ?? null);
+            const writeKey = `${trId}:ann-ack:${tile.word}`;
             const isWriting = writesByKey[writeKey]?.isWriting ?? false;
-            const clickable = isActive === true;
+            // Clickable is the persistent enabledByTile flag (mirrors the
+            // legacy label's Enabled property), not derived from the
+            // current poll alone. Blink follows the ack bit by itself, per
+            // UpdateAlarm - independent of the alarm/color state, so a
+            // green tile can still blink if unacknowledged.
+            const clickable = !unavailable && enabledByTile[i];
+            const blinking = isUnacked === true;
 
             const tone =
               isActive === null
@@ -127,15 +178,15 @@ export function AnnunciationPanel({
                 : isActive
                   ? 'bg-status-critical text-white'
                   : 'bg-status-good text-white';
-            const pulse = isActive === true ? 'animate-pulse' : '';
+            const pulse = blinking ? 'animate-pulse' : '';
 
             return (
               <button
                 key={tile.label}
                 type="button"
                 disabled={!clickable || isWriting}
-                onClick={() => handleClear(i, tile.word)}
-                title={clickable ? 'Click to clear' : undefined}
+                onClick={() => handleAcknowledge(i, tile.word)}
+                title={clickable ? 'Click to acknowledge' : undefined}
                 className={`flex flex-col items-center justify-center gap-1 rounded-lg px-3 py-5 text-center text-xs font-semibold transition-opacity ${tone} ${pulse} ${clickable ? 'cursor-pointer hover:opacity-90' : 'cursor-default'} disabled:opacity-70`}
               >
                 <span>{tile.label}</span>
