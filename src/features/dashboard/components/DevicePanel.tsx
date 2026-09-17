@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
-import type { RegisterOffsetMap } from '../../../domain/entities/TransformerRegisterMap';
+import type { RegisterOffsetMap, DashboardReadings } from '../../../domain/entities/TransformerRegisterMap';
 import { mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
 import type { Device2243RegisterConfig } from '../../../domain/entities/Device2243RegisterMap';
 import { map2243RegistersToReadings } from '../../../domain/entities/Device2243RegisterMap';
@@ -22,7 +22,13 @@ const TEMP_MAX_C = 150;
 
 const POLL_INTERVAL_MS = 1000;
 
-function ReadingTile({
+// Every section below is memoized so a poll tick (every 1s, regardless of
+// whether any value actually changed) or a write in one section doesn't
+// visibly re-render unrelated sections - React skips a memoized component
+// entirely unless its own props changed. This was the cause of clicking
+// e.g. AVR Mode appearing to flicker/update the whole panel.
+
+const ReadingTile = memo(function ReadingTile({
   label,
   value,
   unit,
@@ -61,9 +67,9 @@ function ReadingTile({
       </span>
     </div>
   );
-}
+});
 
-function TemperatureGaugeTile({
+const TemperatureGaugeTile = memo(function TemperatureGaugeTile({
   label,
   value,
   unit,
@@ -88,7 +94,7 @@ function TemperatureGaugeTile({
       <Sparkline values={history} unavailable={unavailable} />
     </div>
   );
-}
+});
 
 function RowIcon({ children }: { children: ReactNode }) {
   return (
@@ -122,7 +128,7 @@ const ROW_ICONS: Record<string, ReactNode> = {
   ),
 };
 
-function StatValue({
+const StatValue = memo(function StatValue({
   label,
   value,
   unavailable,
@@ -149,9 +155,9 @@ function StatValue({
       </span>
     </div>
   );
-}
+});
 
-function MogRow({ value, unavailable }: { value: number | null; unavailable?: boolean }) {
+const MogRow = memo(function MogRow({ value, unavailable }: { value: number | null; unavailable?: boolean }) {
   const flashing = useValueFlash(value);
   const percent = value !== null ? Math.max(0, Math.min(100, value)) : 0;
   return (
@@ -174,9 +180,9 @@ function MogRow({ value, unavailable }: { value: number | null; unavailable?: bo
       </div>
     </div>
   );
-}
+});
 
-function TapPositionRow({
+const TapPositionRow = memo(function TapPositionRow({
   position,
   max,
   unavailable,
@@ -216,7 +222,7 @@ function TapPositionRow({
       )}
     </div>
   );
-}
+});
 
 function ActionButton({
   children,
@@ -247,7 +253,7 @@ function ActionButton({
   );
 }
 
-function StatusChip({ label, active }: { label: string; active: boolean | null }) {
+const StatusChip = memo(function StatusChip({ label, active }: { label: string; active: boolean | null }) {
   const styles =
     active === null
       ? 'bg-surface-100 text-surface-400'
@@ -263,7 +269,63 @@ function StatusChip({ label, active }: { label: string; active: boolean | null }
       {label}
     </div>
   );
+});
+
+interface AvrControlsProps {
+  avrModeIsAuto: boolean | null;
+  controlFailActive: boolean | null;
+  isAvrModeWriting: boolean;
+  isTapRaiseWriting: boolean;
+  isTapLowerWriting: boolean;
+  isCfResetWriting: boolean;
+  onAvrModeToggle: () => void;
+  onTapRaise: () => void;
+  onTapLower: () => void;
+  onControlFailReset: () => void;
 }
+
+// Memoized as one unit (the 4 buttons only ever change together via the
+// same readings) so clicking one doesn't cause sibling sections (temperature
+// gauges, stat rows, status chips) to re-render - only AvrControls itself
+// re-renders, and only when its own props actually changed.
+const AvrControls = memo(function AvrControls({
+  avrModeIsAuto,
+  controlFailActive,
+  isAvrModeWriting,
+  isTapRaiseWriting,
+  isTapLowerWriting,
+  isCfResetWriting,
+  onAvrModeToggle,
+  onTapRaise,
+  onTapLower,
+  onControlFailReset,
+}: AvrControlsProps) {
+  return (
+    <section className="bg-surface-0 rounded-lg border border-surface-200 p-4 space-y-3 animate-panel-enter stagger-3 card-hover">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">AVR Mode</p>
+      <div className="flex flex-wrap gap-2">
+        <ActionButton tone="primary" disabled={isAvrModeWriting} onClick={onAvrModeToggle}>
+          AVR Mode: {avrModeIsAuto === null ? '—' : avrModeIsAuto ? 'AUTO' : 'MANUAL'}
+        </ActionButton>
+        {avrModeIsAuto === false && (
+          <>
+            <ActionButton disabled={isTapRaiseWriting} onClick={onTapRaise}>
+              Tap Raise
+            </ActionButton>
+            <ActionButton disabled={isTapLowerWriting} onClick={onTapLower}>
+              Tap Lower
+            </ActionButton>
+          </>
+        )}
+        {controlFailActive && (
+          <ActionButton tone="critical" disabled={isCfResetWriting} onClick={onControlFailReset}>
+            Control Fail Reset
+          </ActionButton>
+        )}
+      </div>
+    </section>
+  );
+});
 
 interface DevicePanelProps {
   trId: string;
@@ -358,29 +420,70 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   const offsets = device.registerConfig.offsets as RegisterOffsetMap;
   const readings = mapRegistersToReadings(readState?.registers ?? null, offsets);
 
+  const avrModeKey = `${trId}:${device.id}:avr-mode`;
+  const tapRaiseKey = `${trId}:${device.id}:tap-raise`;
+  const tapLowerKey = `${trId}:${device.id}:tap-lower`;
+  const cfResetKey = `${trId}:${device.id}:cf-reset`;
+
+  // Read the latest readings/offsets via a ref (updated in an effect below,
+  // not during render) so the write callbacks' identities stay stable
+  // across polls - otherwise AvrControls would lose its memoization every
+  // ~1s even when nothing about the AVR state actually changed.
+  const latestRef = useRef({ readings, offsets, startAddress });
+  useEffect(() => {
+    latestRef.current = { readings, offsets, startAddress };
+  }, [readings, offsets, startAddress]);
+
   // Mirrors Btn_AvrAuto/Btn_TapRaise/Btn_TapLow/Btn_CfReset_Click: each is
   // confirmation-gated in the legacy app before writing (role-gating isn't
   // ported since this app has no role system yet). Address is
   // startAddress + offset, same convention as every other register in this
   // app (offsets default to 43/44/45/65, landing on 40044/40045/40046/40066
   // per Form1.txt given the default startAddress of 40001).
-  const writeAvrControl = (key: string, confirmMessage: string, offset: number, value: number) => {
-    if (!window.confirm(confirmMessage)) return;
-    dispatch(
-      writeRegisterAsync({
-        key: `${trId}:${device.id}:${key}`,
-        clientId,
-        slaveId: device.slaveId,
-        address: startAddress + offset,
-        value,
-      })
-    );
-  };
+  const writeAvrControl = useCallback(
+    (key: string, confirmMessage: string, offset: number, value: number) => {
+      if (!window.confirm(confirmMessage)) return;
+      dispatch(
+        writeRegisterAsync({
+          key: `${trId}:${device.id}:${key}`,
+          clientId,
+          slaveId: device.slaveId,
+          address: latestRef.current.startAddress + offset,
+          value,
+        })
+      );
+    },
+    [dispatch, trId, device.id, clientId, device.slaveId]
+  );
 
-  const avrModeKey = `${trId}:${device.id}:avr-mode`;
-  const tapRaiseKey = `${trId}:${device.id}:tap-raise`;
-  const tapLowerKey = `${trId}:${device.id}:tap-lower`;
-  const cfResetKey = `${trId}:${device.id}:cf-reset`;
+  const handleAvrModeToggle = useCallback(() => {
+    const { readings: r, offsets: o } = latestRef.current;
+    writeAvrControl(
+      'avr-mode',
+      r.avrModeIsAuto ? 'Switch AVR mode to MANUAL?' : 'Switch AVR mode to AUTO?',
+      o.avrModeWriteRegister,
+      // Btn_AvrAuto_Click: sends 1 when currently AUTO (switching to
+      // Manual), 0 when currently Manual (switching to Auto).
+      r.avrModeIsAuto ? 1 : 0
+    );
+  }, [writeAvrControl]);
+
+  const handleTapRaise = useCallback(() => {
+    writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', latestRef.current.offsets.tapRaiseWriteRegister, 1);
+  }, [writeAvrControl]);
+
+  const handleTapLower = useCallback(() => {
+    writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', latestRef.current.offsets.tapLowerWriteRegister, 1);
+  }, [writeAvrControl]);
+
+  const handleControlFailReset = useCallback(() => {
+    writeAvrControl(
+      'cf-reset',
+      'Are you sure you want to Reset?',
+      latestRef.current.offsets.controlFailResetWriteRegister,
+      0
+    );
+  }, [writeAvrControl]);
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
@@ -494,60 +597,18 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
 
       {/* AVR controls - each writes a real register via FC06, mirroring
           Btn_AvrAuto/Btn_TapRaise/Btn_TapLow/Btn_CfReset_Click */}
-      <section className="bg-surface-0 rounded-lg border border-surface-200 p-4 space-y-3 animate-panel-enter stagger-3 card-hover">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">AVR Mode</p>
-        <div className="flex flex-wrap gap-2">
-          <ActionButton
-            tone="primary"
-            disabled={writesByKey[avrModeKey]?.isWriting}
-            onClick={() =>
-              writeAvrControl(
-                'avr-mode',
-                readings.avrModeIsAuto
-                  ? 'Switch AVR mode to MANUAL?'
-                  : 'Switch AVR mode to AUTO?',
-                offsets.avrModeWriteRegister,
-                // Btn_AvrAuto_Click: sends 1 when currently AUTO (switching
-                // to Manual), 0 when currently Manual (switching to Auto).
-                readings.avrModeIsAuto ? 1 : 0
-              )
-            }
-          >
-            AVR Mode: {readings.avrModeIsAuto === null ? '—' : readings.avrModeIsAuto ? 'AUTO' : 'MANUAL'}
-          </ActionButton>
-          {readings.avrModeIsAuto === false && (
-            <>
-              <ActionButton
-                disabled={writesByKey[tapRaiseKey]?.isWriting}
-                onClick={() =>
-                  writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', offsets.tapRaiseWriteRegister, 1)
-                }
-              >
-                Tap Raise
-              </ActionButton>
-              <ActionButton
-                disabled={writesByKey[tapLowerKey]?.isWriting}
-                onClick={() =>
-                  writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', offsets.tapLowerWriteRegister, 1)
-                }
-              >
-                Tap Lower
-              </ActionButton>
-            </>
-          )}
-          {readings.controlFailActive && (
-            <ActionButton
-              tone="critical"
-              disabled={writesByKey[cfResetKey]?.isWriting}
-              onClick={() =>
-                writeAvrControl('cf-reset', 'Are you sure you want to Reset?', offsets.controlFailResetWriteRegister, 0)
-              }
-            >
-              Control Fail Reset
-            </ActionButton>
-          )}
-        </div>
-      </section>
+      <AvrControls
+        avrModeIsAuto={readings.avrModeIsAuto}
+        controlFailActive={readings.controlFailActive}
+        isAvrModeWriting={writesByKey[avrModeKey]?.isWriting ?? false}
+        isTapRaiseWriting={writesByKey[tapRaiseKey]?.isWriting ?? false}
+        isTapLowerWriting={writesByKey[tapLowerKey]?.isWriting ?? false}
+        isCfResetWriting={writesByKey[cfResetKey]?.isWriting ?? false}
+        onAvrModeToggle={handleAvrModeToggle}
+        onTapRaise={handleTapRaise}
+        onTapLower={handleTapLower}
+        onControlFailReset={handleControlFailReset}
+      />
 
       {/* Status - bit-decoded from the configured breaker/OLTC/PT-fail/AVR registers */}
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3 animate-panel-enter stagger-4">

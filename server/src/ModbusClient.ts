@@ -69,6 +69,28 @@ export class ModbusClient {
   // pull exactly the amount it needs regardless of how TCP packets are chunked.
   private _recvBuffer: Buffer = Buffer.alloc(0);
   private _recvWaiters: Array<() => void> = [];
+  // Serializes every read/write against this socket. Two sub-devices on the
+  // same TR (e.g. IRTCC + 2243) poll independently on their own timers but
+  // share one ModbusClient/TCP connection - without this, two requests could
+  // both write to the socket before either has read its response back, and
+  // since readBytes just pulls the next N bytes off one shared stream with
+  // no per-transaction routing, the two responses interleave and get sliced
+  // at the wrong boundaries (surfaces as "Unexpected byte count" or garbage
+  // register values). Chaining every request through this promise ensures
+  // a request's full write+read cycle finishes before the next one starts.
+  private _requestQueue: Promise<unknown> = Promise.resolve();
+
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const result = this._requestQueue.then(task, task);
+    // Swallow rejections in the chain itself (each caller still gets the
+    // real rejection via `result`) so one failed request doesn't wedge the
+    // queue for everything queued after it.
+    this._requestQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  }
 
   private readonly _statusListeners = new Set<StatusChangedListener>();
   private readonly _errorListeners = new Set<ErrorOccurredListener>();
@@ -254,7 +276,11 @@ export class ModbusClient {
     return this._transactionId;
   }
 
-  private async readRegistersChunk(slaveId: number, startAddress: number, count: number): Promise<number[]> {
+  private readRegistersChunk(slaveId: number, startAddress: number, count: number): Promise<number[]> {
+    return this.enqueue(() => this.readRegistersChunkImpl(slaveId, startAddress, count));
+  }
+
+  private async readRegistersChunkImpl(slaveId: number, startAddress: number, count: number): Promise<number[]> {
     const socket = this._socket;
     if (!socket) {
       this.raiseErrorOccurred('Read: Not connected', slaveId);
@@ -339,7 +365,11 @@ export class ModbusClient {
 
   // -- FC06: Write Single Register --
   // Mirrors: Public Sub WriteSingleRegister(slaveId As Byte, address As Integer, value As UShort)
-  async writeSingleRegister(slaveId: number, address: number, value: number): Promise<void> {
+  writeSingleRegister(slaveId: number, address: number, value: number): Promise<void> {
+    return this.enqueue(() => this.writeSingleRegisterImpl(slaveId, address, value));
+  }
+
+  private async writeSingleRegisterImpl(slaveId: number, address: number, value: number): Promise<void> {
     const socket = this._socket;
     if (!this.isConnected || !socket) {
       this.raiseErrorOccurred('Write: Not connected', slaveId);
