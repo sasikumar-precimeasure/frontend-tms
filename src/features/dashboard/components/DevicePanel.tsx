@@ -12,8 +12,9 @@ import { DevicePanelSettingsDrawer } from './DevicePanelSettingsDrawer';
 
 // Rough operating band for the temperature fill bar - a purely visual cue,
 // not a real alarm threshold (those aren't wired up yet).
-const TEMP_MIN_C = 20;
-const TEMP_MAX_C = 90;
+// Matches Form1.txt's OTI/WTI setpoint validation range (0.0-150.0).
+const TEMP_MIN_C = 0;
+const TEMP_MAX_C = 150;
 
 const POLL_INTERVAL_MS = 1000;
 
