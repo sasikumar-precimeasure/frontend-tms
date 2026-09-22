@@ -143,6 +143,47 @@ function migrateSubDevices(transformers: Transformer[]): Transformer[] {
   }));
 }
 
+// One-time migration for state saved before a field was added to
+// RegisterOffsetMap (e.g. the AVR Settings fields added this session) - an
+// IRTCC device persisted before that point has no key for the new field at
+// all, so `offsets[newField]` reads back `undefined` and a write computes
+// `startAddress + undefined` = NaN/null, sending a malformed FC06 request
+// (this is the actual bug behind "avr setting address not using": the
+// write's `address` field came through as literal `null`). Backfills any
+// offset key missing from a persisted device from DEFAULT_REGISTER_CONFIG,
+// without touching keys that already exist (so a user's own edited offsets
+// are never overwritten) - and bumps `count` up if it's too small to cover
+// the newly-added offsets, since a smaller persisted count would silently
+// truncate the read before it ever reaches them.
+function migrateIrtccOffsets(transformers: Transformer[]): Transformer[] {
+  return transformers.map((tr) => ({
+    ...tr,
+    gateways: tr.gateways.map((gw) => ({
+      ...gw,
+      subDevices: gw.subDevices.map((device) => {
+        if (device.deviceType !== 'irtcc') return device;
+        const offsets = device.registerConfig.offsets as unknown as Record<string, number>;
+        const defaults = DEFAULT_REGISTER_CONFIG.offsets as unknown as Record<string, number>;
+        const missingKeys = Object.keys(defaults).filter((key) => !(key in offsets));
+        const needsCountBump = device.registerConfig.count < DEFAULT_REGISTER_CONFIG.count;
+        if (missingKeys.length === 0 && !needsCountBump) return device;
+        const mergedOffsets = { ...offsets };
+        missingKeys.forEach((key) => {
+          mergedOffsets[key] = defaults[key];
+        });
+        return {
+          ...device,
+          registerConfig: {
+            ...device.registerConfig,
+            count: needsCountBump ? DEFAULT_REGISTER_CONFIG.count : device.registerConfig.count,
+            offsets: mergedOffsets as unknown as RegisterOffsetMap,
+          },
+        };
+      }),
+    })),
+  }));
+}
+
 // One-time migration for state saved before per-device mail thresholds
 // existed - backfills a default set so older persisted devices don't crash
 // the Mail Configuration screen with an undefined mailThresholds.
@@ -170,7 +211,7 @@ function loadPersistedState(): PersistedState | null {
     }>;
     if (!Array.isArray(parsed.transformers) || parsed.transformers.length === 0) return null;
     const transformers = migrateMailThresholds(
-      migrateSubDevices(resetLiveConnectionFields(migrateToGateways(parsed.transformers)))
+      migrateIrtccOffsets(migrateSubDevices(resetLiveConnectionFields(migrateToGateways(parsed.transformers))))
     );
     return {
       transformers,
