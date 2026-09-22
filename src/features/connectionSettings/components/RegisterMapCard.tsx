@@ -36,6 +36,20 @@ const IRTCC_FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
   controlFailResetWriteRegister: 'AVR — Control Fail Reset',
   controlFailStatusRegister: 'AVR — Control Fail Status',
   avrStatusWord: 'AVR — Status Word',
+  avrPtRatio: 'AVR Settings — PT Ratio',
+  avrSetVoltage: 'AVR Settings — Set Voltage',
+  avrRaiseRelayVoltage: 'AVR Settings — Raise Relay Voltage',
+  avrLowRelayVoltage: 'AVR Settings — Low Relay Voltage',
+  avrHsForwardVoltage: 'AVR Settings — HS Forward Voltage',
+  avrHsBackwardVoltage: 'AVR Settings — HS Backward Voltage',
+  avrOverVoltage: 'AVR Settings — Over Voltage',
+  avrUnderVoltage: 'AVR Settings — Under Voltage',
+  avrPtFailSetpoint: 'AVR Settings — PT Fail',
+  avrInitialTime: 'AVR Settings — Initial Time',
+  avrSequentialTime: 'AVR Settings — Sequential Time',
+  avrHighFwdBwdTime: 'AVR Settings — High Fwd/Bwd Time',
+  avrControlFailTime: 'AVR Settings — Control Fail Time',
+  avrRelayMomentaryTime: 'AVR Settings — Relay Momentary Time',
 };
 
 // Bit-position fields (0-15) are conceptually different from register
@@ -64,10 +78,11 @@ const DEVICE_2243_FIELD_ORDER = Object.keys(DEVICE_2243_FIELD_LABELS) as (keyof 
 
 interface RegisterMapCardProps {
   trId: string;
+  gatewayId: string;
   device: SubDevice;
 }
 
-export const RegisterMapCard = ({ trId, device }: RegisterMapCardProps) => {
+export const RegisterMapCard = ({ trId, gatewayId, device }: RegisterMapCardProps) => {
   const dispatch = useAppDispatch();
   const { startAddress, count } = device.registerConfig;
   const is2243 = device.deviceType === '2243';
@@ -97,6 +112,7 @@ export const RegisterMapCard = ({ trId, device }: RegisterMapCardProps) => {
               dispatch(
                 updateSubDeviceReadConfig({
                   trId,
+                  gatewayId,
                   deviceId: device.id,
                   startAddress: Number(e.target.value) || 0,
                   count,
@@ -115,6 +131,7 @@ export const RegisterMapCard = ({ trId, device }: RegisterMapCardProps) => {
               dispatch(
                 updateSubDeviceReadConfig({
                   trId,
+                  gatewayId,
                   deviceId: device.id,
                   startAddress,
                   count: Number(e.target.value) || 0,
@@ -140,6 +157,7 @@ export const RegisterMapCard = ({ trId, device }: RegisterMapCardProps) => {
                       dispatch(
                         updateSubDeviceRegisterOffset({
                           trId,
+                          gatewayId,
                           deviceId: device.id,
                           field,
                           offset: Number(e.target.value) || 0,
@@ -168,6 +186,7 @@ export const RegisterMapCard = ({ trId, device }: RegisterMapCardProps) => {
                         dispatch(
                           updateSubDeviceRegisterOffset({
                             trId,
+                            gatewayId,
                             deviceId: device.id,
                             field,
                             offset: Number(e.target.value) || 0,

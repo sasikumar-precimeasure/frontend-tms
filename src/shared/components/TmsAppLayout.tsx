@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useTheme } from '../hooks/useTheme';
 import { useAppDispatch, useAppSelector } from '../../app/store/hooks';
-import { connectTransformerAsync } from '../../features/connectionSettings/slice';
+import { connectGatewayAsync } from '../../features/connectionSettings/slice';
 
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard' },
@@ -16,22 +16,27 @@ export const TmsAppLayout = () => {
   const dispatch = useAppDispatch();
   const transformers = useAppSelector((state) => state.connectionSettings.transformers);
 
+  // Flatten every TR's gateways into one list - each gateway is its own
+  // real TCP connection (its own IP/port/clientId), so auto-connect and
+  // auto-reconnect both operate per-gateway, not per-TR.
+  const gatewayEntries = transformers.flatMap((tr) => tr.gateways.map((gw) => ({ trId: tr.id, gw })));
+
   // Auto-reconnect once per app load: the gateway's real TCP socket lives in
   // a separate Node process, so a page reload always starts "disconnected"
   // even though the user was connected before - reattach automatically for
-  // every transformer with a saved IP, using the same thunk the manual
-  // Connect button already dispatches. A ref (not state) guards this so it
-  // fires exactly once regardless of re-renders or route changes, since
-  // this layout stays mounted for the whole app session.
+  // every gateway with a saved IP, using the same thunk the manual Connect
+  // button already dispatches. A ref (not state) guards this so it fires
+  // exactly once regardless of re-renders or route changes, since this
+  // layout stays mounted for the whole app session.
   const hasAttemptedReconnect = useRef(false);
   useEffect(() => {
     if (hasAttemptedReconnect.current) return;
     hasAttemptedReconnect.current = true;
 
-    transformers
-      .filter((tr) => tr.ipAddress.trim() !== '')
-      .forEach((tr) => {
-        dispatch(connectTransformerAsync({ trId: tr.id, clientId: tr.clientId, ipAddress: tr.ipAddress, port: tr.port }));
+    gatewayEntries
+      .filter(({ gw }) => gw.ipAddress.trim() !== '')
+      .forEach(({ trId, gw }) => {
+        dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port }));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -39,23 +44,27 @@ export const TmsAppLayout = () => {
   // Auto-reconnect on drop, not just on load: a read/write can discover the
   // gateway's underlying TCP socket died mid-session (see ModbusClient.ts -
   // a framing/timeout error tears the connection down since the byte stream
-  // can't be resynced), which flips a transformer's isConnected to false
-  // without the user touching anything. Poll every few seconds and retry
-  // connectTransformerAsync for any transformer that's down but has a saved
-  // IP and isn't already mid-connect-attempt - same thunk the manual
-  // Connect button uses, so status/error state stays consistent either way.
-  const transformersRef = useRef(transformers);
+  // can't be resynced), which flips a gateway's isConnected to false without
+  // the user touching anything. Poll every few seconds and retry
+  // connectGatewayAsync for any gateway that's down but has a saved IP and
+  // isn't already mid-connect-attempt - same thunk the manual Connect
+  // button uses, so status/error state stays consistent either way.
+  const gatewayEntriesRef = useRef(gatewayEntries);
   useEffect(() => {
-    transformersRef.current = transformers;
+    gatewayEntriesRef.current = gatewayEntries;
+    // gatewayEntries is a fresh array every render (derived via flatMap) -
+    // depend on `transformers` itself, the actual underlying reference that
+    // changes, rather than exhaustive-deps chasing the derived array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transformers]);
 
   useEffect(() => {
     const RECONNECT_CHECK_MS = 5000;
     const intervalId = setInterval(() => {
-      transformersRef.current
-        .filter((tr) => tr.ipAddress.trim() !== '' && !tr.isConnected && !tr.isConnecting)
-        .forEach((tr) => {
-          dispatch(connectTransformerAsync({ trId: tr.id, clientId: tr.clientId, ipAddress: tr.ipAddress, port: tr.port }));
+      gatewayEntriesRef.current
+        .filter(({ gw }) => gw.ipAddress.trim() !== '' && !gw.isConnected && !gw.isConnecting)
+        .forEach(({ trId, gw }) => {
+          dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port }));
         });
     }, RECONNECT_CHECK_MS);
     return () => clearInterval(intervalId);

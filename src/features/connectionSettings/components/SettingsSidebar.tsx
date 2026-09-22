@@ -3,14 +3,15 @@ const SETTINGS_SECTIONS = [
   'Password Settings',
   'COM Settings',
   'AVR Settings',
+  'Mail Configuration',
   'Input Settings',
 ] as const;
 
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
-// Only Connection Settings is implemented; the rest are shown disabled so the
+// Only these sections are implemented; the rest are shown disabled so the
 // sidebar matches the reference layout without pretending to navigate anywhere.
-const IMPLEMENTED: SettingsSection[] = ['Connection Settings'];
+const IMPLEMENTED: SettingsSection[] = ['Connection Settings', 'AVR Settings', 'Mail Configuration'];
 
 interface SettingsSidebarProps {
   active: SettingsSection;

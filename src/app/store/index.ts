@@ -3,6 +3,8 @@ import authReducer from '../../features/auth/slice';
 import connectionSettingsReducer from '../../features/connectionSettings/slice';
 import { persistConnectionSettings } from '../../features/connectionSettings/slice';
 import dashboardReducer from '../../features/dashboard/slice';
+import mailSettingsReducer from '../../features/mailSettings/slice';
+import { persistMailSettings } from '../../features/mailSettings/slice';
 import type { Dependencies } from '../dependencies';
 
 export interface StoreConfig {
@@ -17,6 +19,7 @@ export function createStore(config: StoreConfig) {
       auth: authReducer,
       connectionSettings: connectionSettingsReducer,
       dashboard: dashboardReducer,
+      mailSettings: mailSettingsReducer,
     },
     middleware: (getDefaultMiddleware) =>
       getDefaultMiddleware({
@@ -33,11 +36,16 @@ export function createStore(config: StoreConfig) {
   // on the next load, since the real socket lives in the gateway process,
   // not this store.
   let previousConnectionSettings = store.getState().connectionSettings;
+  let previousMailSettings = store.getState().mailSettings;
   store.subscribe(() => {
-    const current = store.getState().connectionSettings;
-    if (current !== previousConnectionSettings) {
-      previousConnectionSettings = current;
-      persistConnectionSettings(current);
+    const state = store.getState();
+    if (state.connectionSettings !== previousConnectionSettings) {
+      previousConnectionSettings = state.connectionSettings;
+      persistConnectionSettings(state.connectionSettings);
+    }
+    if (state.mailSettings !== previousMailSettings) {
+      previousMailSettings = state.mailSettings;
+      persistMailSettings(state.mailSettings);
     }
   });
 

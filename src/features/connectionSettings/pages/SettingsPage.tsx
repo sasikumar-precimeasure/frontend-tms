@@ -4,7 +4,9 @@ import { SettingsSidebar } from '../components/SettingsSidebar';
 import type { SettingsSection } from '../components/SettingsSidebar';
 import { TransformerConnectionCard } from '../components/TransformerConnectionCard';
 import { RegisterMapCard } from '../components/RegisterMapCard';
-import { selectTr, addTransformer, removeTransformer, renameTransformer } from '../slice';
+import { AvrSettingsCard } from '../components/AvrSettingsCard';
+import { MailConfigurationCard } from '../components/MailConfigurationCard';
+import { selectTr, addTransformer, removeTransformer, renameTransformer, addGateway } from '../slice';
 
 const SettingsPage = () => {
   const dispatch = useAppDispatch();
@@ -17,7 +19,9 @@ const SettingsPage = () => {
     <div className="min-h-screen bg-surface-100">
       <header className="px-6 py-5 bg-surface-0 border-b border-surface-200">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">Settings</p>
-        <h1 className="text-xl font-semibold text-surface-900">{selectedTr?.name ?? 'No transformer selected'}</h1>
+        <h1 className="text-xl font-semibold text-surface-900">
+          {section === 'Mail Configuration' ? 'Mail Configuration' : (selectedTr?.name ?? 'No transformer selected')}
+        </h1>
       </header>
 
       <div className="max-w-6xl mx-auto px-6 py-6 flex gap-6 items-start">
@@ -74,13 +78,54 @@ const SettingsPage = () => {
         <main className="flex-1 min-w-0 space-y-4">
           <h2 className="text-sm font-semibold text-surface-700">{section}</h2>
 
-          {selectedTr ? (
-            <>
-              <TransformerConnectionCard transformer={selectedTr} />
-              {selectedTr.subDevices.map((device) => (
-                <RegisterMapCard key={device.id} trId={selectedTr.id} device={device} />
-              ))}
-            </>
+          {section === 'Mail Configuration' ? (
+            <MailConfigurationCard />
+          ) : selectedTr ? (
+            section === 'AVR Settings' ? (
+              (() => {
+                const irtccDevices = selectedTr.gateways.flatMap((gateway) =>
+                  gateway.subDevices
+                    .filter((device) => device.deviceType === 'irtcc')
+                    .map((device) => ({ device, gateway }))
+                );
+                return irtccDevices.length > 0 ? (
+                  <>
+                    {irtccDevices.map(({ device, gateway }) => (
+                      <AvrSettingsCard
+                        key={device.id}
+                        trId={selectedTr.id}
+                        clientId={gateway.clientId}
+                        isConnected={gateway.isConnected}
+                        device={device}
+                      />
+                    ))}
+                  </>
+                ) : (
+                  <div className="bg-surface-0 rounded-lg border border-dashed border-surface-300 p-8 text-center">
+                    <p className="text-sm text-surface-500">
+                      No IRTCC device configured for {selectedTr.name} yet - add one under Connection Settings.
+                    </p>
+                  </div>
+                );
+              })()
+            ) : (
+              <>
+                {selectedTr.gateways.map((gateway) => (
+                  <TransformerConnectionCard key={gateway.id} trId={selectedTr.id} gateway={gateway} />
+                ))}
+                <button
+                  onClick={() => dispatch(addGateway({ trId: selectedTr.id }))}
+                  className="text-xs font-semibold text-primary hover:text-primary-700"
+                >
+                  + Add Gateway
+                </button>
+                {selectedTr.gateways.flatMap((gateway) =>
+                  gateway.subDevices.map((device) => (
+                    <RegisterMapCard key={device.id} trId={selectedTr.id} gatewayId={gateway.id} device={device} />
+                  ))
+                )}
+              </>
+            )
           ) : (
             <div className="bg-surface-0 rounded-lg border border-dashed border-surface-300 p-8 text-center">
               <p className="text-sm text-surface-500">No transformers configured yet.</p>

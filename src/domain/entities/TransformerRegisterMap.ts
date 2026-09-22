@@ -66,7 +66,93 @@ export interface RegisterOffsetMap {
   // bit 0 = AFR, bit 1 = Raise Relay, bit 2 = Lower Relay, bit 6 = Over Volt,
   // bit 7 = Under Volt.
   avrStatusWord: number;
+  // AVR Settings (mirrors Btn_AVR_PTSet/Btn_NVSet/Btn_HSRSet/Btn_RRSet/
+  // Btn_HSFSet/Btn_LRSet/Btn_OVSet/Btn_UVSet/Btn_AVR_PTFail/Btn_T1Set/
+  // Btn_T2Set/Btn_T3Set/Btn_CFTSet/Btn_AVR_RTSet's UpdateValues targets) -
+  // each field is independently read-and-writable via its own "OK" button,
+  // same pattern as the 2243 Alarm/Trip Setpoints screen.
+  avrPtRatio: number;
+  avrSetVoltage: number;
+  avrRaiseRelayVoltage: number;
+  avrLowRelayVoltage: number;
+  avrHsForwardVoltage: number;
+  avrHsBackwardVoltage: number;
+  avrOverVoltage: number;
+  avrUnderVoltage: number;
+  avrPtFailSetpoint: number;
+  avrInitialTime: number;
+  avrSequentialTime: number;
+  avrHighFwdBwdTime: number;
+  avrControlFailTime: number;
+  avrRelayMomentaryTime: number;
 }
+
+// Settings > AVR Settings screen fields, in the same left-column/right-column
+// order as the legacy AVR SETTINGS group box. `scaled` fields are written as
+// value*10 (mirrors e.g. `resetvalue = txtRRvolt.Text * 10`); unscaled fields
+// (the Sec. time fields, plus PT Ratio) are written as-is. Validation ranges
+// are copied directly from each Btn_*_Click handler in Form1.txt.
+export interface AvrSettingField {
+  key: keyof Pick<
+    RegisterOffsetMap,
+    | 'avrPtRatio'
+    | 'avrSetVoltage'
+    | 'avrRaiseRelayVoltage'
+    | 'avrLowRelayVoltage'
+    | 'avrHsForwardVoltage'
+    | 'avrHsBackwardVoltage'
+    | 'avrOverVoltage'
+    | 'avrUnderVoltage'
+    | 'avrPtFailSetpoint'
+    | 'avrInitialTime'
+    | 'avrSequentialTime'
+    | 'avrHighFwdBwdTime'
+    | 'avrControlFailTime'
+    | 'avrRelayMomentaryTime'
+  >;
+  readingsKey: keyof Pick<
+    DashboardReadings,
+    | 'avrPtRatio'
+    | 'avrSetVoltage'
+    | 'avrRaiseRelayVoltage'
+    | 'avrLowRelayVoltage'
+    | 'avrHsForwardVoltage'
+    | 'avrHsBackwardVoltage'
+    | 'avrOverVoltage'
+    | 'avrUnderVoltage'
+    | 'avrPtFailSetpoint'
+    | 'avrInitialTime'
+    | 'avrSequentialTime'
+    | 'avrHighFwdBwdTime'
+    | 'avrControlFailTime'
+    | 'avrRelayMomentaryTime'
+  >;
+  label: string;
+  unit: string;
+  min: number;
+  max: number;
+  scaled: boolean;
+}
+
+export const AVR_SETTING_FIELDS_COLUMN_1: AvrSettingField[] = [
+  { key: 'avrPtRatio', readingsKey: 'avrPtRatio', label: 'PT Ratio', unit: '%', min: 0, max: 1000, scaled: false },
+  { key: 'avrSetVoltage', readingsKey: 'avrSetVoltage', label: 'Set Voltage', unit: 'V', min: 95.0, max: 140.0, scaled: true },
+  { key: 'avrRaiseRelayVoltage', readingsKey: 'avrRaiseRelayVoltage', label: 'Raise Relay Voltage', unit: '%', min: 0, max: 100.0, scaled: true },
+  { key: 'avrLowRelayVoltage', readingsKey: 'avrLowRelayVoltage', label: 'Low Relay Voltage', unit: '%', min: 0, max: 100.0, scaled: true },
+  { key: 'avrHsForwardVoltage', readingsKey: 'avrHsForwardVoltage', label: 'HS Forward Voltage', unit: '%', min: 0, max: 100.0, scaled: true },
+  { key: 'avrHsBackwardVoltage', readingsKey: 'avrHsBackwardVoltage', label: 'HS Backward Voltage', unit: '%', min: 0, max: 100.0, scaled: true },
+  { key: 'avrOverVoltage', readingsKey: 'avrOverVoltage', label: 'Over Voltage', unit: '%', min: 0, max: 100.0, scaled: true },
+  { key: 'avrUnderVoltage', readingsKey: 'avrUnderVoltage', label: 'Under Voltage', unit: '%', min: 0, max: 100.0, scaled: true },
+];
+
+export const AVR_SETTING_FIELDS_COLUMN_2: AvrSettingField[] = [
+  { key: 'avrInitialTime', readingsKey: 'avrInitialTime', label: 'Initial Time', unit: 'Sec.', min: 1, max: 999, scaled: false },
+  { key: 'avrSequentialTime', readingsKey: 'avrSequentialTime', label: 'Sequential Time', unit: 'Sec.', min: 1, max: 999, scaled: false },
+  { key: 'avrHighFwdBwdTime', readingsKey: 'avrHighFwdBwdTime', label: 'High Fwd/Bwd Time', unit: 'Sec.', min: 1, max: 999, scaled: false },
+  { key: 'avrControlFailTime', readingsKey: 'avrControlFailTime', label: 'Control Fail Time', unit: 'Sec.', min: 1, max: 999, scaled: false },
+  { key: 'avrRelayMomentaryTime', readingsKey: 'avrRelayMomentaryTime', label: 'Relay Momentary Time', unit: 'Sec.', min: 1, max: 1000, scaled: false },
+  { key: 'avrPtFailSetpoint', readingsKey: 'avrPtFailSetpoint', label: 'PT Fail', unit: '%', min: 0, max: 100, scaled: true },
+];
 
 export interface TransformerRegisterConfig {
   startAddress: number;
@@ -118,6 +204,21 @@ export const DEFAULT_REGISTER_CONFIG: TransformerRegisterConfig = {
     controlFailResetWriteRegister: 65,
     controlFailStatusRegister: 66,
     avrStatusWord: 9,
+    // 40020, 40047-40059 relative to startAddress 40001 -> offsets 19, 46-58.
+    avrPtRatio: 19,
+    avrSetVoltage: 46,
+    avrRaiseRelayVoltage: 47,
+    avrLowRelayVoltage: 48,
+    avrHsForwardVoltage: 49,
+    avrHsBackwardVoltage: 50,
+    avrOverVoltage: 51,
+    avrUnderVoltage: 52,
+    avrPtFailSetpoint: 53,
+    avrInitialTime: 54,
+    avrSequentialTime: 55,
+    avrHighFwdBwdTime: 56,
+    avrControlFailTime: 57,
+    avrRelayMomentaryTime: 58,
   },
 };
 
@@ -195,6 +296,24 @@ export interface DashboardReadings {
   lowerRelayActive: boolean | null;
   overVoltActive: boolean | null;
   underVoltActive: boolean | null;
+  // AVR Settings - current values shown in the Settings > AVR Settings
+  // panel, each independently writable via its own "OK" button. Voltage/PT
+  // Fail fields are already /10'd (display value); time fields are raw
+  // (unscaled), matching Form1.txt's txtAVR* TextChanged handlers.
+  avrPtRatio: number | null;
+  avrSetVoltage: number | null;
+  avrRaiseRelayVoltage: number | null;
+  avrLowRelayVoltage: number | null;
+  avrHsForwardVoltage: number | null;
+  avrHsBackwardVoltage: number | null;
+  avrOverVoltage: number | null;
+  avrUnderVoltage: number | null;
+  avrPtFailSetpoint: number | null;
+  avrInitialTime: number | null;
+  avrSequentialTime: number | null;
+  avrHighFwdBwdTime: number | null;
+  avrControlFailTime: number | null;
+  avrRelayMomentaryTime: number | null;
 }
 
 // Signed 16-bit correction: a Modbus holding register is unsigned (0-65535)
@@ -268,6 +387,15 @@ function readBit(word: number | null, bit: number): boolean | null {
   return ((word >> bit) & 1) === 1;
 }
 
+// AVR Settings voltage/PT-fail fields: display value is raw/10 (mirrors
+// e.g. txtNominalVolt.Text = Format(double_byte(47) / 10, "000.0")), no
+// signed correction or "Open" sentinel (unlike temperatures) - these are
+// plain setpoints.
+function readAvrScaledSetting(raw: number | null): number | null {
+  if (raw === null) return null;
+  return Math.round(raw) / 10;
+}
+
 export function mapRegistersToReadings(
   registers: number[] | null,
   offsets: RegisterOffsetMap
@@ -329,5 +457,19 @@ export function mapRegistersToReadings(
     lowerRelayActive: readBit(avrStatusWord, 2),
     overVoltActive: readBit(avrStatusWord, 6),
     underVoltActive: readBit(avrStatusWord, 7),
+    avrPtRatio: get(offsets.avrPtRatio),
+    avrSetVoltage: readAvrScaledSetting(get(offsets.avrSetVoltage)),
+    avrRaiseRelayVoltage: readAvrScaledSetting(get(offsets.avrRaiseRelayVoltage)),
+    avrLowRelayVoltage: readAvrScaledSetting(get(offsets.avrLowRelayVoltage)),
+    avrHsForwardVoltage: readAvrScaledSetting(get(offsets.avrHsForwardVoltage)),
+    avrHsBackwardVoltage: readAvrScaledSetting(get(offsets.avrHsBackwardVoltage)),
+    avrOverVoltage: readAvrScaledSetting(get(offsets.avrOverVoltage)),
+    avrUnderVoltage: readAvrScaledSetting(get(offsets.avrUnderVoltage)),
+    avrPtFailSetpoint: readAvrScaledSetting(get(offsets.avrPtFailSetpoint)),
+    avrInitialTime: get(offsets.avrInitialTime),
+    avrSequentialTime: get(offsets.avrSequentialTime),
+    avrHighFwdBwdTime: get(offsets.avrHighFwdBwdTime),
+    avrControlFailTime: get(offsets.avrControlFailTime),
+    avrRelayMomentaryTime: get(offsets.avrRelayMomentaryTime),
   };
 }

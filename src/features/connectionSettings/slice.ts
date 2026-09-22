@@ -1,10 +1,12 @@
 import { createSlice, createAsyncThunk, nanoid } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
-import type { DeviceType, Transformer, SubDevice } from '../../domain/entities/ConnectionSettings';
+import type { DeviceType, Transformer, Gateway, SubDevice } from '../../domain/entities/ConnectionSettings';
 import type { RegisterOffsetMap } from '../../domain/entities/TransformerRegisterMap';
 import { DEFAULT_REGISTER_CONFIG } from '../../domain/entities/TransformerRegisterMap';
 import type { Device2243OffsetMap } from '../../domain/entities/Device2243RegisterMap';
 import { DEFAULT_2243_REGISTER_CONFIG } from '../../domain/entities/Device2243RegisterMap';
+import type { MailThresholds } from '../../domain/entities/MailSettings';
+import { DEFAULT_MAIL_THRESHOLDS } from '../../domain/entities/MailSettings';
 import type { Dependencies } from '../../app/dependencies';
 import { AxiosError } from 'axios';
 import { readTransformerRegistersAsync, writeRegisterAsync } from '../dashboard/slice';
@@ -29,6 +31,10 @@ function makeRegisterConfigForType(deviceType: DeviceType) {
   return deviceType === '2243' ? cloneDefault2243RegisterConfig() : cloneDefaultRegisterConfig();
 }
 
+function cloneDefaultMailThresholds(): MailThresholds {
+  return { ...DEFAULT_MAIL_THRESHOLDS };
+}
+
 interface ConnectionSettingsState {
   selectedTrId: string;
   transformers: Transformer[];
@@ -45,11 +51,56 @@ type PersistedState = Pick<ConnectionSettingsState, 'transformers' | 'selectedTr
 function resetLiveConnectionFields(transformers: Transformer[]): Transformer[] {
   return transformers.map((tr) => ({
     ...tr,
-    status: 'disconnected',
-    isConnected: false,
-    isConnecting: false,
-    errorMessage: null,
+    gateways: tr.gateways.map((gw) => ({
+      ...gw,
+      status: 'disconnected' as const,
+      isConnected: false,
+      isConnecting: false,
+      errorMessage: null,
+    })),
   }));
+}
+
+// One-time migration for state saved before the Gateway layer existed: back
+// then a Transformer owned its connection (ipAddress/port/clientId) and
+// subDevices directly. Detected by the absence of `gateways` (old shape has
+// `ipAddress` on the TR itself) - wraps that single connection's worth of
+// data into one Gateway so existing IP/port/clientId/devices survive
+// untouched. Runs on every load (cheap, idempotent) rather than a versioned
+// persist key.
+interface LegacyTransformerShape {
+  id: string;
+  name: string;
+  clientId?: number;
+  ipAddress?: string;
+  port?: number;
+  status?: string;
+  isConnected?: boolean;
+  isConnecting?: boolean;
+  errorMessage?: string | null;
+  subDevices?: SubDevice[];
+  gateways?: Gateway[];
+}
+
+function migrateToGateways(raw: LegacyTransformerShape[]): Transformer[] {
+  return raw.map((tr) => {
+    if (Array.isArray(tr.gateways)) {
+      return { id: tr.id, name: tr.name, gateways: tr.gateways };
+    }
+    const gateway: Gateway = {
+      id: nanoid(),
+      name: 'Gateway 1',
+      clientId: tr.clientId ?? 1,
+      ipAddress: tr.ipAddress ?? '',
+      port: tr.port ?? 502,
+      status: 'disconnected',
+      isConnected: false,
+      isConnecting: false,
+      errorMessage: null,
+      subDevices: tr.subDevices ?? [],
+    };
+    return { id: tr.id, name: tr.name, gateways: [gateway] };
+  });
 }
 
 // One-time migration for state saved before deviceType/Device2243RegisterMap
@@ -65,26 +116,45 @@ function resetLiveConnectionFields(transformers: Transformer[]): Transformer[] {
 function migrateSubDevices(transformers: Transformer[]): Transformer[] {
   return transformers.map((tr) => ({
     ...tr,
-    subDevices: tr.subDevices.map((device) => {
-      const offsets = device.registerConfig?.offsets as unknown as Record<string, unknown> | undefined;
-      const alreadyShaped2243 = offsets ? 'otiAlarmSetpoint' in offsets : false;
-      const nameSuggests2243 = /2243/.test(device.name);
+    gateways: tr.gateways.map((gw) => ({
+      ...gw,
+      subDevices: gw.subDevices.map((device) => {
+        const offsets = device.registerConfig?.offsets as unknown as Record<string, unknown> | undefined;
+        const alreadyShaped2243 = offsets ? 'otiAlarmSetpoint' in offsets : false;
+        const nameSuggests2243 = /2243/.test(device.name);
 
-      if (device.deviceType === '2243' && alreadyShaped2243) {
-        return device; // already correct, nothing to migrate
-      }
-      if (device.deviceType !== '2243' && !nameSuggests2243 && device.deviceType) {
-        return device; // a real, already-typed IRTCC (or other) device
-      }
+        if (device.deviceType === '2243' && alreadyShaped2243) {
+          return device; // already correct, nothing to migrate
+        }
+        if (device.deviceType !== '2243' && !nameSuggests2243 && device.deviceType) {
+          return device; // a real, already-typed IRTCC (or other) device
+        }
 
-      const correctedType: DeviceType = device.deviceType === '2243' || nameSuggests2243 ? '2243' : 'irtcc';
-      const needsFreshConfig = correctedType === '2243' ? !alreadyShaped2243 : false;
-      return {
-        ...device,
-        deviceType: correctedType,
-        registerConfig: needsFreshConfig || !device.deviceType ? makeRegisterConfigForType(correctedType) : device.registerConfig,
-      };
-    }),
+        const correctedType: DeviceType = device.deviceType === '2243' || nameSuggests2243 ? '2243' : 'irtcc';
+        const needsFreshConfig = correctedType === '2243' ? !alreadyShaped2243 : false;
+        return {
+          ...device,
+          deviceType: correctedType,
+          registerConfig:
+            needsFreshConfig || !device.deviceType ? makeRegisterConfigForType(correctedType) : device.registerConfig,
+        };
+      }),
+    })),
+  }));
+}
+
+// One-time migration for state saved before per-device mail thresholds
+// existed - backfills a default set so older persisted devices don't crash
+// the Mail Configuration screen with an undefined mailThresholds.
+function migrateMailThresholds(transformers: Transformer[]): Transformer[] {
+  return transformers.map((tr) => ({
+    ...tr,
+    gateways: tr.gateways.map((gw) => ({
+      ...gw,
+      subDevices: gw.subDevices.map((device) =>
+        device.mailThresholds ? device : { ...device, mailThresholds: cloneDefaultMailThresholds() }
+      ),
+    })),
   }));
 }
 
@@ -93,12 +163,19 @@ function loadPersistedState(): PersistedState | null {
   try {
     const raw = window.localStorage.getItem(PERSIST_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PersistedState>;
+    const parsed = JSON.parse(raw) as Partial<{
+      transformers: LegacyTransformerShape[];
+      selectedTrId: string;
+      nextClientId: number;
+    }>;
     if (!Array.isArray(parsed.transformers) || parsed.transformers.length === 0) return null;
+    const transformers = migrateMailThresholds(
+      migrateSubDevices(resetLiveConnectionFields(migrateToGateways(parsed.transformers)))
+    );
     return {
-      transformers: migrateSubDevices(resetLiveConnectionFields(parsed.transformers as Transformer[])),
-      selectedTrId: typeof parsed.selectedTrId === 'string' ? parsed.selectedTrId : parsed.transformers[0].id,
-      nextClientId: typeof parsed.nextClientId === 'number' ? parsed.nextClientId : parsed.transformers.length + 1,
+      transformers,
+      selectedTrId: typeof parsed.selectedTrId === 'string' ? parsed.selectedTrId : transformers[0].id,
+      nextClientId: typeof parsed.nextClientId === 'number' ? parsed.nextClientId : transformers.length + 1,
     };
   } catch {
     // Corrupt/stale localStorage content - fall back to defaults rather
@@ -126,33 +203,45 @@ function makeDefaultState(): Pick<ConnectionSettingsState, 'transformers' | 'sel
   const transformers: Transformer[] = [
     {
       id: nanoid(),
-      clientId: 1,
       name: 'TR1 7.5 MVA',
-      ipAddress: '192.168.65.100',
-      port: 502,
-      status: 'disconnected',
-      isConnected: false,
-      isConnecting: false,
-      errorMessage: null,
-      subDevices: [
-        { id: nanoid(), name: 'TR1 7.5 MVA IRTCC', enabled: true, slaveId: 1, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig() },
-        { id: nanoid(), name: 'TR1 7.5 MVA 2243', enabled: true, slaveId: 11, deviceType: '2243', registerConfig: cloneDefault2243RegisterConfig() },
-        { id: nanoid(), name: 'TR 1 Smart Breather', enabled: false, slaveId: 5, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig() },
+      gateways: [
+        {
+          id: nanoid(),
+          name: 'Gateway 1',
+          clientId: 1,
+          ipAddress: '192.168.65.100',
+          port: 502,
+          status: 'disconnected',
+          isConnected: false,
+          isConnecting: false,
+          errorMessage: null,
+          subDevices: [
+            { id: nanoid(), name: 'TR1 7.5 MVA IRTCC', enabled: true, slaveId: 1, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig(), mailThresholds: cloneDefaultMailThresholds() },
+            { id: nanoid(), name: 'TR1 7.5 MVA 2243', enabled: true, slaveId: 11, deviceType: '2243', registerConfig: cloneDefault2243RegisterConfig(), mailThresholds: cloneDefaultMailThresholds() },
+            { id: nanoid(), name: 'TR 1 Smart Breather', enabled: false, slaveId: 5, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig(), mailThresholds: cloneDefaultMailThresholds() },
+          ],
+        },
       ],
     },
     {
       id: nanoid(),
-      clientId: 2,
       name: 'TR2 7.5 MVA',
-      ipAddress: '192.168.65.252',
-      port: 502,
-      status: 'disconnected',
-      isConnected: false,
-      isConnecting: false,
-      errorMessage: null,
-      subDevices: [
-        { id: nanoid(), name: 'TR2 7.5 MVA IRTCC', enabled: true, slaveId: 2, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig() },
-        { id: nanoid(), name: 'TR2 7.5 MVA 2243', enabled: true, slaveId: 22, deviceType: '2243', registerConfig: cloneDefault2243RegisterConfig() },
+      gateways: [
+        {
+          id: nanoid(),
+          name: 'Gateway 1',
+          clientId: 2,
+          ipAddress: '192.168.65.252',
+          port: 502,
+          status: 'disconnected',
+          isConnected: false,
+          isConnecting: false,
+          errorMessage: null,
+          subDevices: [
+            { id: nanoid(), name: 'TR2 7.5 MVA IRTCC', enabled: true, slaveId: 2, deviceType: 'irtcc', registerConfig: cloneDefaultRegisterConfig(), mailThresholds: cloneDefaultMailThresholds() },
+            { id: nanoid(), name: 'TR2 7.5 MVA 2243', enabled: true, slaveId: 22, deviceType: '2243', registerConfig: cloneDefault2243RegisterConfig(), mailThresholds: cloneDefaultMailThresholds() },
+          ],
+        },
       ],
     },
   ];
@@ -176,12 +265,24 @@ function extractErrorMessage(error: unknown): string {
   return 'An unknown error occurred';
 }
 
-// -- Connect a transformer's own connection -- (mirrors ModbusClient.vb Connect(ipAddress, port))
-export const connectTransformerAsync = createAsyncThunk<
-  { trId: string; clientId: number; status: string; isConnected: boolean; errorMessage: string | null },
-  { trId: string; clientId: number; ipAddress: string; port: number },
+function findGateway(state: ConnectionSettingsState, trId: string, gatewayId: string): Gateway | undefined {
+  return state.transformers.find((t) => t.id === trId)?.gateways.find((g) => g.id === gatewayId);
+}
+
+function findGatewayByClientId(state: ConnectionSettingsState, clientId: number): Gateway | undefined {
+  for (const tr of state.transformers) {
+    const gw = tr.gateways.find((g) => g.clientId === clientId);
+    if (gw) return gw;
+  }
+  return undefined;
+}
+
+// -- Connect one gateway's own connection -- (mirrors ModbusClient.vb Connect(ipAddress, port))
+export const connectGatewayAsync = createAsyncThunk<
+  { trId: string; gatewayId: string; clientId: number; status: string; isConnected: boolean; errorMessage: string | null },
+  { trId: string; gatewayId: string; clientId: number; ipAddress: string; port: number },
   { extra: Dependencies }
->('connectionSettings/connectTransformer', async (request, { extra, rejectWithValue }) => {
+>('connectionSettings/connectGateway', async (request, { extra, rejectWithValue }) => {
   try {
     const modbus = extra.modbus();
     const result = await modbus.connectModbusUseCase.execute({
@@ -191,25 +292,26 @@ export const connectTransformerAsync = createAsyncThunk<
     });
     return {
       trId: request.trId,
+      gatewayId: request.gatewayId,
       clientId: result.clientId,
       status: result.status,
       isConnected: result.isConnected,
       errorMessage: result.errorMessage,
     };
   } catch (error: unknown) {
-    return rejectWithValue({ trId: request.trId, message: extractErrorMessage(error) });
+    return rejectWithValue({ trId: request.trId, gatewayId: request.gatewayId, message: extractErrorMessage(error) });
   }
 });
 
-// -- Disconnect a transformer's own connection -- (mirrors ModbusClient.vb Disconnect())
-export const disconnectTransformerAsync = createAsyncThunk<
-  { trId: string; status: string; isConnected: boolean },
-  { trId: string; clientId: number },
+// -- Disconnect one gateway's own connection -- (mirrors ModbusClient.vb Disconnect())
+export const disconnectGatewayAsync = createAsyncThunk<
+  { trId: string; gatewayId: string; status: string; isConnected: boolean },
+  { trId: string; gatewayId: string; clientId: number },
   { extra: Dependencies }
->('connectionSettings/disconnectTransformer', async (request, { extra }) => {
+>('connectionSettings/disconnectGateway', async (request, { extra }) => {
   const modbus = extra.modbus();
   const result = await modbus.disconnectModbusUseCase.execute({ clientId: request.clientId });
-  return { trId: request.trId, status: result.status, isConnected: result.isConnected };
+  return { trId: request.trId, gatewayId: request.gatewayId, status: result.status, isConnected: result.isConnected };
 });
 
 const connectionSettingsSlice = createSlice({
@@ -224,15 +326,21 @@ const connectionSettingsSlice = createSlice({
       state.nextClientId += 1;
       const newTr: Transformer = {
         id: nanoid(),
-        clientId,
         name: `TR${state.transformers.length + 1}`,
-        ipAddress: '',
-        port: 502,
-        status: 'disconnected',
-        isConnected: false,
-        isConnecting: false,
-        errorMessage: null,
-        subDevices: [],
+        gateways: [
+          {
+            id: nanoid(),
+            name: 'Gateway 1',
+            clientId,
+            ipAddress: '',
+            port: 502,
+            status: 'disconnected',
+            isConnected: false,
+            isConnecting: false,
+            errorMessage: null,
+            subDevices: [],
+          },
+        ],
       };
       state.transformers.push(newTr);
       state.selectedTrId = newTr.id;
@@ -247,23 +355,55 @@ const connectionSettingsSlice = createSlice({
       const tr = state.transformers.find((t) => t.id === action.payload.trId);
       if (tr) tr.name = action.payload.name;
     },
-    updateTransformerConnection: (
-      state,
-      action: PayloadAction<{ trId: string; ipAddress: string; port: number }>
-    ) => {
+    addGateway: (state, action: PayloadAction<{ trId: string }>) => {
       const tr = state.transformers.find((t) => t.id === action.payload.trId);
       if (tr) {
-        tr.ipAddress = action.payload.ipAddress;
-        tr.port = action.payload.port;
+        const clientId = state.nextClientId;
+        state.nextClientId += 1;
+        tr.gateways.push({
+          id: nanoid(),
+          name: `Gateway ${tr.gateways.length + 1}`,
+          clientId,
+          ipAddress: '',
+          port: 502,
+          status: 'disconnected',
+          isConnected: false,
+          isConnecting: false,
+          errorMessage: null,
+          subDevices: [],
+        });
       }
     },
-    clearTransformerError: (state, action: PayloadAction<{ trId: string }>) => {
-      const tr = state.transformers.find((t) => t.id === action.payload.trId);
-      if (tr) tr.errorMessage = null;
-    },
-    addSubDevice: (state, action: PayloadAction<{ trId: string; deviceType?: DeviceType }>) => {
+    removeGateway: (state, action: PayloadAction<{ trId: string; gatewayId: string }>) => {
       const tr = state.transformers.find((t) => t.id === action.payload.trId);
       if (tr) {
+        tr.gateways = tr.gateways.filter((gw) => gw.id !== action.payload.gatewayId);
+      }
+    },
+    renameGateway: (state, action: PayloadAction<{ trId: string; gatewayId: string; name: string }>) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      if (gw) gw.name = action.payload.name;
+    },
+    updateGatewayConnection: (
+      state,
+      action: PayloadAction<{ trId: string; gatewayId: string; ipAddress: string; port: number }>
+    ) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      if (gw) {
+        gw.ipAddress = action.payload.ipAddress;
+        gw.port = action.payload.port;
+      }
+    },
+    clearGatewayError: (state, action: PayloadAction<{ trId: string; gatewayId: string }>) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      if (gw) gw.errorMessage = null;
+    },
+    addSubDevice: (
+      state,
+      action: PayloadAction<{ trId: string; gatewayId: string; deviceType?: DeviceType }>
+    ) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      if (gw) {
         const deviceType = action.payload.deviceType ?? 'irtcc';
         const newDevice: SubDevice = {
           id: nanoid(),
@@ -272,43 +412,44 @@ const connectionSettingsSlice = createSlice({
           slaveId: 1,
           deviceType,
           registerConfig: makeRegisterConfigForType(deviceType),
+          mailThresholds: cloneDefaultMailThresholds(),
         };
-        tr.subDevices.push(newDevice);
+        gw.subDevices.push(newDevice);
       }
     },
-    removeSubDevice: (state, action: PayloadAction<{ trId: string; deviceId: string }>) => {
-      const tr = state.transformers.find((t) => t.id === action.payload.trId);
-      if (tr) {
-        tr.subDevices = tr.subDevices.filter((d) => d.id !== action.payload.deviceId);
+    removeSubDevice: (state, action: PayloadAction<{ trId: string; gatewayId: string; deviceId: string }>) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      if (gw) {
+        gw.subDevices = gw.subDevices.filter((d) => d.id !== action.payload.deviceId);
       }
     },
     updateSubDeviceField: (
       state,
-      action: PayloadAction<{ trId: string; deviceId: string; field: 'name'; value: string }>
+      action: PayloadAction<{ trId: string; gatewayId: string; deviceId: string; field: 'name'; value: string }>
     ) => {
-      const tr = state.transformers.find((t) => t.id === action.payload.trId);
-      const device = tr?.subDevices.find((d) => d.id === action.payload.deviceId);
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      const device = gw?.subDevices.find((d) => d.id === action.payload.deviceId);
       if (device) device[action.payload.field] = action.payload.value;
     },
     updateSubDeviceSlaveId: (
       state,
-      action: PayloadAction<{ trId: string; deviceId: string; slaveId: number }>
+      action: PayloadAction<{ trId: string; gatewayId: string; deviceId: string; slaveId: number }>
     ) => {
-      const tr = state.transformers.find((t) => t.id === action.payload.trId);
-      const device = tr?.subDevices.find((d) => d.id === action.payload.deviceId);
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      const device = gw?.subDevices.find((d) => d.id === action.payload.deviceId);
       if (device) device.slaveId = action.payload.slaveId;
     },
-    toggleSubDeviceEnabled: (state, action: PayloadAction<{ trId: string; deviceId: string }>) => {
-      const tr = state.transformers.find((t) => t.id === action.payload.trId);
-      const device = tr?.subDevices.find((d) => d.id === action.payload.deviceId);
+    toggleSubDeviceEnabled: (state, action: PayloadAction<{ trId: string; gatewayId: string; deviceId: string }>) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      const device = gw?.subDevices.find((d) => d.id === action.payload.deviceId);
       if (device) device.enabled = !device.enabled;
     },
     updateSubDeviceReadConfig: (
       state,
-      action: PayloadAction<{ trId: string; deviceId: string; startAddress: number; count: number }>
+      action: PayloadAction<{ trId: string; gatewayId: string; deviceId: string; startAddress: number; count: number }>
     ) => {
-      const tr = state.transformers.find((t) => t.id === action.payload.trId);
-      const device = tr?.subDevices.find((d) => d.id === action.payload.deviceId);
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      const device = gw?.subDevices.find((d) => d.id === action.payload.deviceId);
       if (device) {
         device.registerConfig.startAddress = action.payload.startAddress;
         device.registerConfig.count = action.payload.count;
@@ -318,99 +459,109 @@ const connectionSettingsSlice = createSlice({
       state,
       action: PayloadAction<{
         trId: string;
+        gatewayId: string;
         deviceId: string;
         field: keyof RegisterOffsetMap | keyof Device2243OffsetMap;
         offset: number;
       }>
     ) => {
-      const tr = state.transformers.find((t) => t.id === action.payload.trId);
-      const device = tr?.subDevices.find((d) => d.id === action.payload.deviceId);
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      const device = gw?.subDevices.find((d) => d.id === action.payload.deviceId);
       if (device) {
-        const offsets = device.registerConfig.offsets as Record<string, number>;
+        const offsets = device.registerConfig.offsets as unknown as Record<string, number>;
         offsets[action.payload.field] = action.payload.offset;
       }
+    },
+    updateSubDeviceMailThresholds: (
+      state,
+      action: PayloadAction<{ trId: string; gatewayId: string; deviceId: string; thresholds: MailThresholds }>
+    ) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      const device = gw?.subDevices.find((d) => d.id === action.payload.deviceId);
+      if (device) device.mailThresholds = action.payload.thresholds;
     },
   },
   extraReducers: (builder) => {
     builder
-      .addCase(connectTransformerAsync.pending, (state, action) => {
-        const tr = state.transformers.find((t) => t.id === action.meta.arg.trId);
-        if (tr) {
-          tr.isConnecting = true;
-          tr.status = 'connecting';
-          tr.errorMessage = null;
+      .addCase(connectGatewayAsync.pending, (state, action) => {
+        const gw = findGateway(state, action.meta.arg.trId, action.meta.arg.gatewayId);
+        if (gw) {
+          gw.isConnecting = true;
+          gw.status = 'connecting';
+          gw.errorMessage = null;
         }
       })
-      .addCase(connectTransformerAsync.fulfilled, (state, action) => {
-        const tr = state.transformers.find((t) => t.id === action.payload.trId);
-        if (tr) {
-          tr.isConnecting = false;
-          tr.status = action.payload.status as Transformer['status'];
-          tr.isConnected = action.payload.isConnected;
-          tr.errorMessage = action.payload.errorMessage;
+      .addCase(connectGatewayAsync.fulfilled, (state, action) => {
+        const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+        if (gw) {
+          gw.isConnecting = false;
+          gw.status = action.payload.status as Gateway['status'];
+          gw.isConnected = action.payload.isConnected;
+          gw.errorMessage = action.payload.errorMessage;
         }
       })
-      .addCase(connectTransformerAsync.rejected, (state, action) => {
-        const payload = action.payload as { trId: string; message: string } | undefined;
+      .addCase(connectGatewayAsync.rejected, (state, action) => {
+        const payload = action.payload as { trId: string; gatewayId: string; message: string } | undefined;
         const trId = payload?.trId ?? action.meta.arg.trId;
-        const tr = state.transformers.find((t) => t.id === trId);
-        if (tr) {
-          tr.isConnecting = false;
-          tr.status = 'error';
-          tr.isConnected = false;
-          tr.errorMessage = payload?.message ?? 'Connection failed';
+        const gatewayId = payload?.gatewayId ?? action.meta.arg.gatewayId;
+        const gw = findGateway(state, trId, gatewayId);
+        if (gw) {
+          gw.isConnecting = false;
+          gw.status = 'error';
+          gw.isConnected = false;
+          gw.errorMessage = payload?.message ?? 'Connection failed';
         }
       })
-      .addCase(disconnectTransformerAsync.fulfilled, (state, action) => {
-        const tr = state.transformers.find((t) => t.id === action.payload.trId);
-        if (tr) {
-          tr.status = action.payload.status as Transformer['status'];
-          tr.isConnected = action.payload.isConnected;
-          tr.errorMessage = null;
+      .addCase(disconnectGatewayAsync.fulfilled, (state, action) => {
+        const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+        if (gw) {
+          gw.status = action.payload.status as Gateway['status'];
+          gw.isConnected = action.payload.isConnected;
+          gw.errorMessage = null;
         }
       })
       // A read/write against a dead socket tells us the gateway's connection
-      // for this transformer's clientId dropped (ModbusClient disconnects
-      // itself on a framing/timeout error, since the byte stream can't be
-      // resynced) - mirror that into isConnected here so the auto-reconnect
-      // watcher in TmsAppLayout notices and retries, instead of leaving the
-      // UI stuck showing "connected" against a socket that's actually gone.
+      // for this clientId dropped (ModbusClient disconnects itself on a
+      // framing/timeout error, since the byte stream can't be resynced) -
+      // mirror that into isConnected here so the auto-reconnect watcher in
+      // TmsAppLayout notices and retries, instead of leaving the UI stuck
+      // showing "connected" against a socket that's actually gone.
       .addCase(readTransformerRegistersAsync.fulfilled, (state, action) => {
         if (action.payload.isConnected) return;
-        const tr = state.transformers.find((t) => t.clientId === action.meta.arg.clientId);
-        if (tr && tr.isConnected) {
-          tr.isConnected = false;
-          tr.status = 'error';
-          tr.errorMessage = action.payload.errorMessage;
+        const gw = findGatewayByClientId(state, action.meta.arg.clientId);
+        if (gw && gw.isConnected) {
+          gw.isConnected = false;
+          gw.status = 'error';
+          gw.errorMessage = action.payload.errorMessage;
         }
       })
       .addCase(readTransformerRegistersAsync.rejected, (state, action) => {
         const payload = action.payload as { isConnected?: boolean; message?: string } | undefined;
         if (payload?.isConnected !== false) return;
-        const tr = state.transformers.find((t) => t.clientId === action.meta.arg.clientId);
-        if (tr && tr.isConnected) {
-          tr.isConnected = false;
-          tr.status = 'error';
-          tr.errorMessage = payload.message ?? 'Read failed';
+        const gw = findGatewayByClientId(state, action.meta.arg.clientId);
+        if (gw && gw.isConnected) {
+          gw.isConnected = false;
+          gw.status = 'error';
+          gw.errorMessage = payload.message ?? 'Read failed';
         }
       })
       .addCase(writeRegisterAsync.fulfilled, (state, action) => {
         if (action.payload.isConnected) return;
-        const tr = state.transformers.find((t) => t.clientId === action.meta.arg.clientId);
-        if (tr && tr.isConnected) {
-          tr.isConnected = false;
-          tr.status = 'error';
-          tr.errorMessage = action.payload.errorMessage;
+        const gw = findGatewayByClientId(state, action.meta.arg.clientId);
+        if (gw && gw.isConnected) {
+          gw.isConnected = false;
+          gw.status = 'error';
+          gw.errorMessage = action.payload.errorMessage;
         }
       })
       .addCase(writeRegisterAsync.rejected, (state, action) => {
         const payload = action.payload as { isConnected?: boolean; message?: string } | undefined;
         if (payload?.isConnected !== false) return;
-        const tr = state.transformers.find((t) => t.clientId === action.meta.arg.clientId);
-        if (tr && tr.isConnected) {
-          tr.isConnected = false;
-          tr.status = 'error';
-          tr.errorMessage = payload.message ?? 'Write failed';
+        const gw = findGatewayByClientId(state, action.meta.arg.clientId);
+        if (gw && gw.isConnected) {
+          gw.isConnected = false;
+          gw.status = 'error';
+          gw.errorMessage = payload.message ?? 'Write failed';
         }
       });
   },
@@ -421,8 +572,11 @@ export const {
   addTransformer,
   removeTransformer,
   renameTransformer,
-  updateTransformerConnection,
-  clearTransformerError,
+  addGateway,
+  removeGateway,
+  renameGateway,
+  updateGatewayConnection,
+  clearGatewayError,
   addSubDevice,
   removeSubDevice,
   updateSubDeviceField,
@@ -430,5 +584,6 @@ export const {
   toggleSubDeviceEnabled,
   updateSubDeviceReadConfig,
   updateSubDeviceRegisterOffset,
+  updateSubDeviceMailThresholds,
 } = connectionSettingsSlice.actions;
 export default connectionSettingsSlice.reducer;

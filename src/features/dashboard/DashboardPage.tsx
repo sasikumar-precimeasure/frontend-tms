@@ -20,7 +20,25 @@ const DashboardPage = () => {
     transformers.some((tr) => tr.id === persistedSelectedTrId) ? persistedSelectedTrId : (transformers[0]?.id ?? '');
   const setSelectedTrId = (trId: string) => dispatch(selectTr(trId));
   const selectedTr = transformers.find((tr) => tr.id === selectedTrId) ?? transformers[0];
-  const devices = selectedTr?.subDevices.filter((d) => d.enabled) ?? [];
+  // Devices come from every gateway under this TR - paired with their own
+  // gateway so DevicePanel gets the right clientId/isConnected (each
+  // gateway is its own TCP connection, no longer just the TR's single one).
+  const deviceEntries =
+    selectedTr?.gateways.flatMap((gateway) =>
+      gateway.subDevices.filter((d) => d.enabled).map((device) => ({ device, gateway }))
+    ) ?? [];
+  const devices = deviceEntries.map((entry) => entry.device);
+  const configuredGateways = selectedTr?.gateways.filter((gw) => gw.ipAddress.trim() !== '') ?? [];
+  const allGatewaysConnected = configuredGateways.length > 0 && configuredGateways.every((gw) => gw.isConnected);
+  // Aggregate status for the header ring: any gateway still connecting wins
+  // (most "in progress" looking), then any error, then connected/disconnected.
+  const aggregateStatus = configuredGateways.some((gw) => gw.status === 'connecting')
+    ? 'connecting'
+    : configuredGateways.some((gw) => gw.status === 'error')
+      ? 'error'
+      : allGatewaysConnected
+        ? 'connected'
+        : 'disconnected';
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -71,7 +89,7 @@ const DashboardPage = () => {
           <label className="text-[11px] font-semibold uppercase tracking-wider text-surface-500 shrink-0">
             Transformer
           </label>
-          <div className="status-ring" data-status={selectedTr?.status ?? 'disconnected'}>
+          <div className="status-ring" data-status={selectedTr ? aggregateStatus : 'disconnected'}>
             <select
               value={selectedTrId}
               onChange={(e) => setSelectedTrId(e.target.value)}
@@ -151,12 +169,12 @@ const DashboardPage = () => {
           </div>
         )}
         {selectedTr &&
-          devices.map((device) => (
+          deviceEntries.map(({ device, gateway }) => (
             <div key={device.id} className="w-full h-full shrink-0 snap-start overflow-y-auto">
               <DevicePanel
                 trId={selectedTr.id}
-                clientId={selectedTr.clientId}
-                isConnected={selectedTr.isConnected}
+                clientId={gateway.clientId}
+                isConnected={gateway.isConnected}
                 device={device}
               />
             </div>
@@ -166,9 +184,15 @@ const DashboardPage = () => {
       <footer className="shrink-0 flex items-center justify-between px-6 py-2.5 bg-surface-0 border-t border-surface-200 text-sm animate-panel-enter stagger-4">
         <div className="flex items-center gap-2">
           <span
-            className={`w-2 h-2 rounded-full transition-colors duration-300 ${selectedTr?.isConnected ? 'bg-status-good text-status-good animate-breathe status-glow' : 'bg-surface-300'}`}
+            className={`w-2 h-2 rounded-full transition-colors duration-300 ${allGatewaysConnected ? 'bg-status-good text-status-good animate-breathe status-glow' : 'bg-surface-300'}`}
           />
-          <span className="text-surface-600">{selectedTr?.isConnected ? 'Connected' : 'Disconnected'}</span>
+          <span className="text-surface-600">
+            {selectedTr && selectedTr.gateways.length > 1
+              ? `${selectedTr.gateways.filter((gw) => gw.isConnected).length}/${selectedTr.gateways.length} gateways connected`
+              : allGatewaysConnected
+                ? 'Connected'
+                : 'Disconnected'}
+          </span>
         </div>
         <div className="flex items-center gap-3">
           {anyReading && (
