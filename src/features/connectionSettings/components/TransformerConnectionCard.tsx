@@ -1,4 +1,4 @@
-import { useAppDispatch } from '../../../app/store/hooks';
+import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { Gateway } from '../../../domain/entities/ConnectionSettings';
 import {
   connectGatewayAsync,
@@ -13,7 +13,7 @@ import {
   renameGateway,
   removeGateway,
 } from '../slice';
-import { removeDeviceFromAllRecipients } from '../../mailSettings/slice';
+import { saveRecipientAsync } from '../../mailSettings/slice';
 
 const STATUS_DOT: Record<string, string> = {
   disconnected: 'bg-surface-300',
@@ -32,6 +32,7 @@ interface GatewayConnectionCardProps {
 // one of these per gateway (see SettingsPage.tsx).
 export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCardProps) => {
   const dispatch = useAppDispatch();
+  const recipients = useAppSelector((state) => state.mailSettings.recipients);
 
   const handleConnectToggle = () => {
     if (gateway.isConnected) {
@@ -180,7 +181,24 @@ export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCa
             <button
               onClick={() => {
                 dispatch(removeSubDevice({ trId, gatewayId: gateway.id, deviceId: device.id }));
-                dispatch(removeDeviceFromAllRecipients({ deviceId: device.id }));
+                // Backend recipients have no dedicated "remove this device
+                // everywhere" endpoint - re-save each affected recipient
+                // with the stale id filtered out of their deviceIds so
+                // tms-backend's copy doesn't keep referencing a device that
+                // no longer exists.
+                recipients
+                  .filter((recipient) => recipient.deviceIds.includes(device.id))
+                  .forEach((recipient) => {
+                    dispatch(
+                      saveRecipientAsync({
+                        id: recipient.id,
+                        name: recipient.name,
+                        email: recipient.email,
+                        enabled: recipient.enabled,
+                        deviceIds: recipient.deviceIds.filter((id) => id !== device.id),
+                      })
+                    );
+                  });
               }}
               className="text-xs text-surface-400 hover:text-status-critical"
             >

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import { SettingsSidebar } from '../components/SettingsSidebar';
 import type { SettingsSection } from '../components/SettingsSidebar';
+import { useFirstAllowedSettingsSection } from '../settingsSectionPermissions';
 import { TransformerConnectionCard } from '../components/TransformerConnectionCard';
 import { RegisterMapCard } from '../components/RegisterMapCard';
 import { AvrSettingsCard } from '../components/AvrSettingsCard';
@@ -11,16 +12,31 @@ import { selectTr, addTransformer, removeTransformer, renameTransformer, addGate
 const SettingsPage = () => {
   const dispatch = useAppDispatch();
   const { selectedTrId, transformers } = useAppSelector((state) => state.connectionSettings);
-  const [section, setSection] = useState<SettingsSection>('Connection Settings');
+  const firstAllowedSection = useFirstAllowedSettingsSection();
+  const [section, setSection] = useState<SettingsSection | null>(firstAllowedSection);
 
   const selectedTr = transformers.find((tr) => tr.id === selectedTrId) ?? transformers[0];
+
+  if (section === null) {
+    return (
+      <div className="min-h-screen bg-surface-100">
+        <header className="px-6 py-5 bg-surface-0 border-b border-surface-200">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">Settings</p>
+          <h1 className="text-xl font-semibold text-surface-900">No access</h1>
+        </header>
+        <div className="max-w-2xl mx-auto px-6 py-6">
+          <p className="text-sm text-surface-500">You do not have permission to view any Settings section.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-surface-100">
       <header className="px-6 py-5 bg-surface-0 border-b border-surface-200">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">Settings</p>
         <h1 className="text-xl font-semibold text-surface-900">
-          {section === 'Mail Configuration' ? 'Mail Configuration' : (selectedTr?.name ?? 'No transformer selected')}
+          {section === 'Mail Configuration' ? section : (selectedTr?.name ?? 'No transformer selected')}
         </h1>
       </header>
 

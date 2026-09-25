@@ -51,6 +51,8 @@ export function DevicePanelSettingsDrawer({
           <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500 mb-3">Annunciation</p>
           <AnnunciationPanel
             trId={trId}
+            deviceId={device.id}
+            deviceName={device.name}
             clientId={clientId}
             slaveId={device.slaveId}
             startAddress={irtccConfig.startAddress}

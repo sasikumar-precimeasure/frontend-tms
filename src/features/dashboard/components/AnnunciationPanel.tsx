@@ -3,9 +3,13 @@ import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import { ANNUNCIATION_TILES } from '../../../domain/entities/TransformerRegisterMap';
 import type { AnnunciationTile, RegisterOffsetMap } from '../../../domain/entities/TransformerRegisterMap';
 import { writeRegisterAsync } from '../slice';
+import { recordAuditEventAsync } from '../../auditLog/slice';
+import { showNotification } from '../../notifications/slice';
 
 interface AnnunciationPanelProps {
   trId: string;
+  deviceId: string;
+  deviceName: string;
   clientId: number;
   slaveId: number;
   startAddress: number;
@@ -94,6 +98,8 @@ const TileButton = memo(function TileButton({
 // word back via FC06 - the alarm word itself is never touched by a click.
 export function AnnunciationPanel({
   trId,
+  deviceId,
+  deviceName,
   clientId,
   slaveId,
   startAddress,
@@ -171,13 +177,22 @@ export function AnnunciationPanel({
           value: newWord,
         })
       );
+      dispatch(
+        recordAuditEventAsync({
+          eventType: 'ANNUNCIATION_ACK',
+          deviceId,
+          fieldName: tile.label,
+          description: `Acknowledged "${tile.label}"`,
+        })
+      );
+      dispatch(showNotification(`"${tile.label}" acknowledged on ${deviceName}`, trId, deviceId));
       setEnabledByTile((prev) => {
         const next = prev.slice();
         next[tileIndex] = false;
         return next;
       });
     },
-    [offsets, trId, clientId, slaveId, startAddress, dispatch]
+    [offsets, trId, deviceId, deviceName, clientId, slaveId, startAddress, dispatch]
   );
 
   // Mirrors Btn_Mute_Click: WriteSingleRegister(slaveId, muteWriteAddress, 0)

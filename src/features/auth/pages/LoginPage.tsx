@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
-import { loginAsync, clearError } from '../slice';
+import { loginAsync, forgotPasswordAsync, clearError, clearSuccessMessage } from '../slice';
 import { Button } from '../../../shared/components';
 
 export const LoginPage = () => {
@@ -14,9 +14,13 @@ export const LoginPage = () => {
   const [emailError, setEmailError] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetEmailError, setResetEmailError] = useState<string | null>(null);
+
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
-  const { isLoading, error, isAuthenticated } = useAppSelector((state) => state.auth);
+  const { isLoading, error, successMessage, isAuthenticated } = useAppSelector((state) => state.auth);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -27,8 +31,34 @@ export const LoginPage = () => {
   useEffect(() => {
     return () => {
       dispatch(clearError());
+      dispatch(clearSuccessMessage());
     };
   }, [dispatch]);
+
+  const openForgotPassword = () => {
+    dispatch(clearError());
+    dispatch(clearSuccessMessage());
+    setResetEmail(email);
+    setResetEmailError(null);
+    setShowForgotPassword(true);
+  };
+
+  const closeForgotPassword = () => {
+    dispatch(clearError());
+    dispatch(clearSuccessMessage());
+    setShowForgotPassword(false);
+  };
+
+  const handleForgotPasswordSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!resetEmail || !emailRegex.test(resetEmail)) {
+      setResetEmailError('Please enter a valid email address');
+      return;
+    }
+    setResetEmailError(null);
+    await dispatch(forgotPasswordAsync({ email: resetEmail }));
+  };
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -80,6 +110,53 @@ export const LoginPage = () => {
               </div>
             )}
 
+            {showForgotPassword ? (
+              <>
+                <p className="text-sm text-gray-600 mb-4 sm:mb-6">
+                  Enter your account email and we&apos;ll send you a link to reset your password.
+                </p>
+
+                {successMessage && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-3 sm:p-4 mb-4 sm:mb-6">
+                    <p className="text-green-800 text-xs sm:text-sm font-medium">{successMessage}</p>
+                  </div>
+                )}
+
+                <form onSubmit={handleForgotPasswordSubmit} className="space-y-4 sm:space-y-5">
+                  <div>
+                    <label htmlFor="resetEmail" className="block text-xs sm:text-sm font-medium text-gray-900 mb-1.5 sm:mb-2">
+                      Email
+                    </label>
+                    <input
+                      id="resetEmail"
+                      name="resetEmail"
+                      type="text"
+                      autoComplete="email"
+                      value={resetEmail}
+                      onChange={(e) => {
+                        setResetEmail(e.target.value);
+                        setResetEmailError(null);
+                      }}
+                      placeholder="Enter your account email"
+                      className={`w-full px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition ${resetEmailError ? 'border-red-400' : 'border-gray-300'}`}
+                    />
+                    {resetEmailError && <p className="text-red-600 text-xs mt-1">{resetEmailError}</p>}
+                  </div>
+
+                  <Button type="submit" isLoading={isLoading} fullWidth size="md" variant="primary">
+                    Send reset link
+                  </Button>
+
+                  <button
+                    type="button"
+                    onClick={closeForgotPassword}
+                    className="w-full text-center text-sm font-medium text-gray-600 hover:text-gray-800"
+                  >
+                    ← Back to login
+                  </button>
+                </form>
+              </>
+            ) : (
             <form onSubmit={handleSubmit} className="space-y-4 sm:space-y-5">
               <div>
                 <label htmlFor="email" className="block text-xs sm:text-sm font-medium text-gray-900 mb-1.5 sm:mb-2">
@@ -168,7 +245,21 @@ export const LoginPage = () => {
               <Button type="submit" isLoading={isLoading} fullWidth size="md" variant="primary">
                 Login
               </Button>
+
+              <div className="space-y-2 text-xs sm:text-sm pt-2">
+                <div>
+                  <span className="text-gray-900">Forgot password? </span>
+                  <button
+                    type="button"
+                    onClick={openForgotPassword}
+                    className="text-[var(--primary-color)] hover:text-[var(--primary-hover)] font-medium underline"
+                  >
+                    Reset password
+                  </button>
+                </div>
+              </div>
             </form>
+            )}
           </div>
         </div>
       </div>

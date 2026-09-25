@@ -1,83 +1,99 @@
-import { createSlice, nanoid } from '@reduxjs/toolkit';
+import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
-import type { MailRecipient, MailSenderSettings } from '../../domain/entities/MailSettings';
+import type { MailRecipient, MailSenderSettings, MailThresholds } from '../../domain/entities/MailSettings';
 import { DEFAULT_MAIL_SENDER_SETTINGS } from '../../domain/entities/MailSettings';
+import type { Dependencies } from '../../app/dependencies';
 
 interface MailSettingsState {
   sender: MailSenderSettings;
   recipients: MailRecipient[];
+  isLoaded: boolean;
 }
 
-const PERSIST_KEY = 'tms-mail-settings';
-
-function loadPersistedState(): MailSettingsState | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(PERSIST_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<MailSettingsState>;
-    if (!parsed.sender || !Array.isArray(parsed.recipients)) return null;
-    return { sender: parsed.sender, recipients: parsed.recipients };
-  } catch {
-    // Corrupt/stale localStorage content - fall back to defaults rather
-    // than crashing the app on load.
-    return null;
-  }
-}
-
-export function persistMailSettings(state: MailSettingsState): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(PERSIST_KEY, JSON.stringify(state));
-  } catch {
-    // Storage full/unavailable (private browsing, quota) - settings just
-    // won't persist this session; not worth surfacing to the user.
-  }
-}
-
-const initialState: MailSettingsState = loadPersistedState() ?? {
+const initialState: MailSettingsState = {
   sender: { ...DEFAULT_MAIL_SENDER_SETTINGS },
   recipients: [],
+  isLoaded: false,
 };
+
+// tms-backend is the real source of truth now (see
+// infrastructure/web/controller/MailSettingsController.java) - the
+// scheduled EvaluateMailThresholdsUseCase job on the backend reads directly
+// from its own database, so anything only saved to localStorage would never
+// actually affect what mail gets sent. These thunks call the backend
+// directly; there is no local-only fallback path anymore.
+
+export const fetchMailSettingsAsync = createAsyncThunk<
+  { sender: MailSenderSettings; recipients: MailRecipient[] },
+  void,
+  { extra: Dependencies }
+>('mailSettings/fetch', async (_, { extra }) => {
+  const client = extra.infrastructure.apiClient;
+  const [senderRes, recipientsRes] = await Promise.all([
+    client.get<MailSenderSettings>('/tms/api/mail-settings/sender'),
+    client.get<MailRecipient[]>('/tms/api/mail-settings/recipients'),
+  ]);
+  return { sender: senderRes.data, recipients: recipientsRes.data };
+});
+
+export const saveSenderSettingsAsync = createAsyncThunk<MailSenderSettings, MailSenderSettings, { extra: Dependencies }>(
+  'mailSettings/saveSender',
+  async (settings, { extra }) => {
+    await extra.infrastructure.apiClient.put('/tms/api/mail-settings/sender', settings);
+    return settings;
+  }
+);
+
+// Backs both "add" (id === '') and "edit" (id set) - the backend's
+// saveRecipient upserts by id, generating a fresh one server-side when
+// blank, same pattern as the rest of this app's nanoid-on-the-client
+// entities except the id now comes from the backend on first save.
+export const saveRecipientAsync = createAsyncThunk<
+  MailRecipient,
+  { id?: string; name: string; email: string; enabled: boolean; deviceIds: string[] },
+  { extra: Dependencies }
+>('mailSettings/saveRecipient', async (recipient, { extra }) => {
+  const response = await extra.infrastructure.apiClient.post<MailRecipient>('/tms/api/mail-settings/recipients', {
+    id: recipient.id ?? '',
+    name: recipient.name,
+    email: recipient.email,
+    enabled: recipient.enabled,
+    deviceIds: recipient.deviceIds,
+  });
+  return response.data;
+});
+
+export const deleteRecipientAsync = createAsyncThunk<{ id: string }, { id: string }, { extra: Dependencies }>(
+  'mailSettings/deleteRecipient',
+  async ({ id }, { extra }) => {
+    await extra.infrastructure.apiClient.delete(`/tms/api/mail-settings/recipients/${id}`);
+    return { id };
+  }
+);
+
+// Saves one device's alert thresholds to tms-backend - this is what the
+// scheduled EvaluateMailThresholdsUseCase job actually reads on its next
+// tick, distinct from (though also mirrored into) the local
+// SubDevice.mailThresholds copy in connectionSettings/slice.ts.
+export const saveMailThresholdsAsync = createAsyncThunk<void, MailThresholds & { deviceId: string }, { extra: Dependencies }>(
+  'mailSettings/saveThresholds',
+  async (thresholds, { extra }) => {
+    await extra.infrastructure.apiClient.put('/tms/api/mail-settings/thresholds', thresholds);
+  }
+);
 
 const mailSettingsSlice = createSlice({
   name: 'mailSettings',
   initialState,
   reducers: {
-    updateSender: (state, action: PayloadAction<MailSenderSettings>) => {
-      state.sender = action.payload;
-    },
-    addRecipient: (state, action: PayloadAction<{ name: string; email: string }>) => {
-      const newRecipient: MailRecipient = {
-        id: nanoid(),
-        name: action.payload.name,
-        email: action.payload.email,
-        enabled: true,
-        deviceIds: [],
-      };
-      state.recipients.push(newRecipient);
-    },
-    updateRecipient: (
-      state,
-      action: PayloadAction<{ id: string; name: string; email: string }>
-    ) => {
-      const recipient = state.recipients.find((r) => r.id === action.payload.id);
-      if (recipient) {
-        recipient.name = action.payload.name;
-        recipient.email = action.payload.email;
-      }
-    },
-    removeRecipient: (state, action: PayloadAction<{ id: string }>) => {
-      state.recipients = state.recipients.filter((r) => r.id !== action.payload.id);
-    },
-    toggleRecipientEnabled: (state, action: PayloadAction<{ id: string }>) => {
+    // Optimistic, purely-local toggles for snappy checkboxes - each is
+    // immediately followed by a saveRecipientAsync dispatch from the
+    // component to persist the change; see MailConfigurationCard.tsx.
+    toggleRecipientEnabledLocal: (state, action: PayloadAction<{ id: string }>) => {
       const recipient = state.recipients.find((r) => r.id === action.payload.id);
       if (recipient) recipient.enabled = !recipient.enabled;
     },
-    // Per-device opt-in, a deliberate refinement of Form1.txt's coarser
-    // per-TR (tr1/tr2) checkboxes - toggles whether this recipient receives
-    // alerts for one specific device.
-    toggleRecipientDevice: (state, action: PayloadAction<{ id: string; deviceId: string }>) => {
+    toggleRecipientDeviceLocal: (state, action: PayloadAction<{ id: string; deviceId: string }>) => {
       const recipient = state.recipients.find((r) => r.id === action.payload.id);
       if (!recipient) return;
       const index = recipient.deviceIds.indexOf(action.payload.deviceId);
@@ -87,23 +103,34 @@ const mailSettingsSlice = createSlice({
         recipient.deviceIds.push(action.payload.deviceId);
       }
     },
-    // Removes a device id from every recipient's opt-in list - call this
-    // when a device is deleted so stale ids don't linger in the list.
-    removeDeviceFromAllRecipients: (state, action: PayloadAction<{ deviceId: string }>) => {
-      state.recipients.forEach((recipient) => {
-        recipient.deviceIds = recipient.deviceIds.filter((id) => id !== action.payload.deviceId);
+  },
+  extraReducers: (builder) => {
+    builder
+      .addCase(fetchMailSettingsAsync.fulfilled, (state, action) => {
+        state.sender = action.payload.sender;
+        state.recipients = action.payload.recipients;
+        state.isLoaded = true;
+      })
+      .addCase(saveSenderSettingsAsync.fulfilled, (state, action) => {
+        // The backend never echoes the real password back (see
+        // MailSenderSettingsDto.from) - keep whatever the form just sent
+        // rather than overwriting local state with the blanked-out value,
+        // so the field doesn't visibly clear itself right after saving.
+        state.sender = { ...action.payload };
+      })
+      .addCase(saveRecipientAsync.fulfilled, (state, action) => {
+        const index = state.recipients.findIndex((r) => r.id === action.payload.id);
+        if (index >= 0) {
+          state.recipients[index] = action.payload;
+        } else {
+          state.recipients.push(action.payload);
+        }
+      })
+      .addCase(deleteRecipientAsync.fulfilled, (state, action) => {
+        state.recipients = state.recipients.filter((r) => r.id !== action.payload.id);
       });
-    },
   },
 });
 
-export const {
-  updateSender,
-  addRecipient,
-  updateRecipient,
-  removeRecipient,
-  toggleRecipientEnabled,
-  toggleRecipientDevice,
-  removeDeviceFromAllRecipients,
-} = mailSettingsSlice.actions;
+export const { toggleRecipientEnabledLocal, toggleRecipientDeviceLocal } = mailSettingsSlice.actions;
 export default mailSettingsSlice.reducer;

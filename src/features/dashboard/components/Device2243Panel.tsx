@@ -3,6 +3,7 @@ import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { Device2243OffsetMap, Device2243Readings } from '../../../domain/entities/Device2243RegisterMap';
 import { DEVICE_2243_SETPOINT_FIELDS } from '../../../domain/entities/Device2243RegisterMap';
 import { writeRegisterAsync } from '../slice';
+import { recordAuditEventAsync } from '../../auditLog/slice';
 import { useHistory } from '../hooks/useHistory';
 import { Sparkline } from './Sparkline';
 import { TemperatureGauge } from './TemperatureGauge';
@@ -126,8 +127,9 @@ export function Device2243Panel({
   const otiUnavailable = unavailable || readings.otiTemperature === 'open';
   const wtiUnavailable = unavailable || readings.wtiTemperature === 'open';
 
-  const handleSetpointWrite = (field: keyof Device2243OffsetMap, scaled: boolean, value: number) => {
+  const handleSetpointWrite = (field: keyof Device2243OffsetMap, label: string, unit: string, scaled: boolean, value: number) => {
     const key = `${trId}:${deviceId}:2243-${field}`;
+    const previousValue = readings[field];
     dispatch(
       writeRegisterAsync({
         key,
@@ -135,6 +137,16 @@ export function Device2243Panel({
         slaveId,
         address: startAddress + offsets[field],
         value: scaled ? Math.round(value * 10) : Math.round(value),
+      })
+    );
+    dispatch(
+      recordAuditEventAsync({
+        eventType: 'DEVICE2243_SETPOINT_CHANGE',
+        deviceId,
+        fieldName: label,
+        oldValue: previousValue?.toString(),
+        newValue: value.toString(),
+        description: `${label} changed to ${value}${unit}`,
       })
     );
   };
@@ -163,7 +175,7 @@ export function Device2243Panel({
               currentValue={readings[field.key]}
               unavailable={unavailable}
               isWriting={isWriting}
-              onSubmit={(value) => handleSetpointWrite(field.key, field.scaled, value)}
+              onSubmit={(value) => handleSetpointWrite(field.key, field.label, field.unit, field.scaled, value)}
             />
           );
         })}

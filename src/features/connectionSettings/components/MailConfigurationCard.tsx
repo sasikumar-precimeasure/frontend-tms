@@ -1,15 +1,17 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { MailRecipient, MailSenderSettings, MailThresholds } from '../../../domain/entities/MailSettings';
 import {
-  updateSender,
-  addRecipient,
-  updateRecipient,
-  removeRecipient,
-  toggleRecipientEnabled,
-  toggleRecipientDevice,
+  fetchMailSettingsAsync,
+  saveSenderSettingsAsync,
+  saveRecipientAsync,
+  deleteRecipientAsync,
+  saveMailThresholdsAsync,
+  toggleRecipientEnabledLocal,
+  toggleRecipientDeviceLocal,
 } from '../../mailSettings/slice';
 import { updateSubDeviceMailThresholds } from '../slice';
+import { showToast } from '../../toast/slice';
 
 // IsValidEmailLegacy in Form1.txt uses System.Net.Mail.MailAddress's own
 // parser - a plain "has an @ and something on both sides" check is a
@@ -24,14 +26,27 @@ interface DeviceOption {
 }
 
 // From: sender identity + SMTP settings (mirrors senderEmail_Settings) - one
-// app-wide sender, matching the legacy single-row table.
+// app-wide sender, matching the legacy single-row table. Persisted to
+// tms-backend, which is what the scheduled mail job actually reads.
 function SenderSettingsSection() {
   const dispatch = useAppDispatch();
   const sender = useAppSelector((state) => state.mailSettings.sender);
   const [draft, setDraft] = useState<MailSenderSettings>(sender);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const handleSave = () => {
+  // Reset the draft whenever the fetched sender settings change (e.g. once
+  // the initial load completes) - detected via a previous-value comparison
+  // during render (the pattern this codebase uses for reset-on-change state,
+  // see AnnunciationPanel.tsx) rather than an effect, since this isn't
+  // synchronizing with an external system.
+  const [prevSender, setPrevSender] = useState(sender);
+  if (prevSender !== sender) {
+    setPrevSender(sender);
+    setDraft(sender);
+  }
+
+  const handleSave = async () => {
     if (draft.senderName.trim() === '') {
       setError('Please enter sender name');
       return;
@@ -49,7 +64,17 @@ function SenderSettingsSection() {
       return;
     }
     setError(null);
-    dispatch(updateSender(draft));
+    setSaving(true);
+    try {
+      // ManageMailSettingsUseCase.saveSenderSettings already writes its own
+      // MAIL_CONFIG_CHANGE audit row server-side - don't double it here.
+      await dispatch(saveSenderSettingsAsync(draft)).unwrap();
+      dispatch(showToast('Sender settings updated successfully'));
+    } catch {
+      setError('Failed to save sender settings - is the backend reachable?');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -96,11 +121,14 @@ function SenderSettingsSection() {
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-surface-500 mb-1">Password</label>
+          <label className="block text-xs font-medium text-surface-500 mb-1">
+            Password {sender.senderEmail && <span className="normal-case text-surface-400">(leave blank to keep current)</span>}
+          </label>
           <input
             type="password"
             value={draft.password}
             onChange={(e) => setDraft({ ...draft, password: e.target.value })}
+            placeholder={sender.senderEmail ? '••••••••' : undefined}
             className="w-full px-2.5 py-1.5 text-sm border border-surface-300 rounded-md"
           />
         </div>
@@ -121,9 +149,10 @@ function SenderSettingsSection() {
       <div className="px-4 py-3 border-t border-surface-100">
         <button
           onClick={handleSave}
-          className="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white hover:bg-primary-700 transition"
+          disabled={saving}
+          className="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white hover:bg-primary-700 transition disabled:opacity-50"
         >
-          Save
+          {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>
@@ -138,6 +167,9 @@ interface RecipientRowProps {
 // To: one recipient row - name/email editable inline, enabled toggle, and a
 // per-device checkbox grid (a refinement of Form1.txt's coarser per-TR
 // tr1/tr2 checkboxes) controlling which devices' alerts this person gets.
+// Every mutation here is persisted to tms-backend immediately (no separate
+// "Save" step for the toggles) since those are what the scheduled mail job
+// reads.
 function RecipientRow({ recipient, devices }: RecipientRowProps) {
   const dispatch = useAppDispatch();
   const [editing, setEditing] = useState(false);
@@ -145,7 +177,7 @@ function RecipientRow({ recipient, devices }: RecipientRowProps) {
   const [emailDraft, setEmailDraft] = useState(recipient.email);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (nameDraft.trim() === '') {
       setError('Please enter a name');
       return;
@@ -155,8 +187,54 @@ function RecipientRow({ recipient, devices }: RecipientRowProps) {
       return;
     }
     setError(null);
-    dispatch(updateRecipient({ id: recipient.id, name: nameDraft, email: emailDraft }));
-    setEditing(false);
+    try {
+      // ManageMailSettingsUseCase.saveRecipient already writes its own
+      // MAIL_CONFIG_CHANGE audit row server-side - don't double it here.
+      await dispatch(
+        saveRecipientAsync({ id: recipient.id, name: nameDraft, email: emailDraft, enabled: recipient.enabled, deviceIds: recipient.deviceIds })
+      ).unwrap();
+      dispatch(showToast('Recipient updated successfully'));
+      setEditing(false);
+    } catch {
+      setError('Failed to save - is the backend reachable?');
+    }
+  };
+
+  const handleToggleEnabled = () => {
+    const wasEnabled = recipient.enabled;
+    dispatch(toggleRecipientEnabledLocal({ id: recipient.id }));
+    dispatch(
+      saveRecipientAsync({
+        id: recipient.id,
+        name: recipient.name,
+        email: recipient.email,
+        enabled: !recipient.enabled,
+        deviceIds: recipient.deviceIds,
+      })
+    )
+      .unwrap()
+      .then(() => dispatch(showToast(wasEnabled ? 'Recipient disabled successfully' : 'Recipient enabled successfully')));
+  };
+
+  const handleRemove = async () => {
+    try {
+      await dispatch(deleteRecipientAsync({ id: recipient.id })).unwrap();
+      dispatch(showToast('Recipient removed successfully'));
+    } catch {
+      setError('Failed to remove - is the backend reachable?');
+    }
+  };
+
+  const handleToggleDevice = (device: DeviceOption, wasChecked: boolean) => {
+    dispatch(toggleRecipientDeviceLocal({ id: recipient.id, deviceId: device.id }));
+    const nextDeviceIds = wasChecked
+      ? recipient.deviceIds.filter((id) => id !== device.id)
+      : [...recipient.deviceIds, device.id];
+    dispatch(
+      saveRecipientAsync({ id: recipient.id, name: recipient.name, email: recipient.email, enabled: recipient.enabled, deviceIds: nextDeviceIds })
+    )
+      .unwrap()
+      .then(() => dispatch(showToast(wasChecked ? 'Device removed from recipient successfully' : 'Device added to recipient successfully')));
   };
 
   return (
@@ -165,7 +243,7 @@ function RecipientRow({ recipient, devices }: RecipientRowProps) {
         <input
           type="checkbox"
           checked={recipient.enabled}
-          onChange={() => dispatch(toggleRecipientEnabled({ id: recipient.id }))}
+          onChange={handleToggleEnabled}
           title={recipient.enabled ? 'Enabled - click to disable' : 'Disabled - click to enable'}
           className="w-4 h-4 accent-primary"
         />
@@ -215,10 +293,7 @@ function RecipientRow({ recipient, devices }: RecipientRowProps) {
             </button>
           </>
         )}
-        <button
-          onClick={() => dispatch(removeRecipient({ id: recipient.id }))}
-          className="text-xs text-surface-400 hover:text-status-critical"
-        >
+        <button onClick={handleRemove} className="text-xs text-surface-400 hover:text-status-critical">
           Remove
         </button>
       </div>
@@ -233,7 +308,7 @@ function RecipientRow({ recipient, devices }: RecipientRowProps) {
                 <input
                   type="checkbox"
                   checked={checked}
-                  onChange={() => dispatch(toggleRecipientDevice({ id: recipient.id, deviceId: device.id }))}
+                  onChange={() => handleToggleDevice(device, checked)}
                   className="w-3.5 h-3.5 accent-primary"
                 />
                 {device.label}
@@ -249,6 +324,9 @@ function RecipientRow({ recipient, devices }: RecipientRowProps) {
 // A "don't send mail if a threshold is reached" control is really the
 // threshold value itself (mirrors Form1.txt's email_Settings/
 // email_TR2Settings screen) - each device gets its own set, editable here.
+// Saved to both tms-backend (the scheduled job's real source of truth) and
+// the local SubDevice.mailThresholds copy (so it's what's shown elsewhere
+// in Settings without another round-trip).
 function DeviceThresholdsRow({
   trId,
   gatewayId,
@@ -264,9 +342,23 @@ function DeviceThresholdsRow({
 }) {
   const dispatch = useAppDispatch();
   const [draft, setDraft] = useState<MailThresholds>(thresholds);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSave = () => {
-    dispatch(updateSubDeviceMailThresholds({ trId, gatewayId, deviceId, thresholds: draft }));
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      // ManageMailSettingsUseCase.saveThresholds already writes its own
+      // MAIL_CONFIG_CHANGE audit row server-side - don't double it here.
+      await dispatch(saveMailThresholdsAsync({ ...draft, deviceId })).unwrap();
+      dispatch(updateSubDeviceMailThresholds({ trId, gatewayId, deviceId, thresholds: draft }));
+      dispatch(showToast('Mail thresholds updated successfully'));
+    } catch {
+      setError('Failed to save - is the backend reachable?');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const field = (key: keyof MailThresholds, fieldLabel: string, unit: string) => (
@@ -294,11 +386,13 @@ function DeviceThresholdsRow({
         {field('tapLow', 'Tap Low', '')}
         {field('mailTimeMinutes', 'Re-alert Every', 'min')}
       </div>
+      {error && <p className="mt-1 text-[11px] text-status-critical">{error}</p>}
       <button
         onClick={handleSave}
-        className="mt-2 px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white hover:bg-primary-700 transition"
+        disabled={saving}
+        className="mt-2 px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white hover:bg-primary-700 transition disabled:opacity-50"
       >
-        Save Thresholds
+        {saving ? 'Saving…' : 'Save Thresholds'}
       </button>
     </div>
   );
@@ -307,16 +401,25 @@ function DeviceThresholdsRow({
 // Mail Configuration (Settings > Mail Configuration) - mirrors Form1.txt's
 // Mail Settings screen: sender SMTP settings (From), a recipient list (To)
 // each opt-in per device rather than the legacy's coarser per-TR checkboxes,
-// and per-device alert thresholds (email_Settings/email_TR2Settings).
-// Config only - nothing in this app sends an email yet, since the gateway
-// server has no SMTP capability.
+// and per-device alert thresholds (email_Settings/email_TR2Settings). Sender
+// settings and recipients are fetched from and saved to tms-backend, which
+// also runs the scheduled job that actually evaluates thresholds and sends
+// mail via JavaMailSender.
 export function MailConfigurationCard() {
   const dispatch = useAppDispatch();
   const recipients = useAppSelector((state) => state.mailSettings.recipients);
+  const isLoaded = useAppSelector((state) => state.mailSettings.isLoaded);
   const transformers = useAppSelector((state) => state.connectionSettings.transformers);
   const [newName, setNewName] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [addError, setAddError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    dispatch(fetchMailSettingsAsync())
+      .unwrap()
+      .catch(() => setLoadError('Could not load mail settings from the backend - is it reachable?'));
+  }, [dispatch]);
 
   const deviceOptions: DeviceOption[] = transformers.flatMap((tr) =>
     tr.gateways.flatMap((gw) =>
@@ -324,7 +427,7 @@ export function MailConfigurationCard() {
     )
   );
 
-  const handleAddRecipient = () => {
+  const handleAddRecipient = async () => {
     if (newName.trim() === '') {
       setAddError('Please enter a name');
       return;
@@ -334,13 +437,27 @@ export function MailConfigurationCard() {
       return;
     }
     setAddError(null);
-    dispatch(addRecipient({ name: newName, email: newEmail }));
-    setNewName('');
-    setNewEmail('');
+    try {
+      // ManageMailSettingsUseCase.saveRecipient already writes its own
+      // MAIL_CONFIG_CHANGE audit row server-side - don't double it here.
+      await dispatch(saveRecipientAsync({ name: newName, email: newEmail, enabled: true, deviceIds: [] })).unwrap();
+      dispatch(showToast('Recipient added successfully'));
+      setNewName('');
+      setNewEmail('');
+    } catch {
+      setAddError('Failed to add recipient - is the backend reachable?');
+    }
   };
 
   return (
     <div className="space-y-4">
+      {loadError && (
+        <div className="px-4 py-2.5 rounded-lg bg-status-critical-soft text-status-critical text-sm font-medium">{loadError}</div>
+      )}
+      {!isLoaded && !loadError && (
+        <div className="px-4 py-2.5 rounded-lg bg-surface-100 text-surface-500 text-sm font-medium">Loading mail settings…</div>
+      )}
+
       <SenderSettingsSection />
 
       <div className="bg-surface-0 rounded-lg border border-surface-200 overflow-hidden">

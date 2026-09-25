@@ -7,6 +7,8 @@ import { mapRegistersToReadings } from '../../../domain/entities/TransformerRegi
 import type { Device2243RegisterConfig } from '../../../domain/entities/Device2243RegisterMap';
 import { map2243RegistersToReadings } from '../../../domain/entities/Device2243RegisterMap';
 import { readTransformerRegistersAsync, writeRegisterAsync } from '../slice';
+import { recordAuditEventAsync } from '../../auditLog/slice';
+import { clearPendingDrawerTarget } from '../../notifications/slice';
 import { useValueFlash } from '../hooks/useValueFlash';
 import { useHistory } from '../hooks/useHistory';
 import { Sparkline } from './Sparkline';
@@ -343,6 +345,36 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   const writesByKey = useAppSelector((state) => state.dashboard.writesByKey);
   const { startAddress, count } = device.registerConfig;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const pendingDrawerTarget = useAppSelector((state) => state.notifications.pendingDrawerTarget);
+  const isDrawerTarget = pendingDrawerTarget?.trId === trId && pendingDrawerTarget?.deviceId === device.id;
+
+  // Auto-opens this device's settings drawer (the Annunciation screen) when
+  // a NotificationBanner click routed here - see notifications/slice's
+  // pendingDrawerTarget. Checked directly against `handled` (not a
+  // previous-value comparison) since isDrawerTarget can already be true on
+  // this component's very first render - the notification click dispatches
+  // openDrawerFor(...) and navigates in the same handler, so by the time
+  // DashboardPage/DevicePanel mount fresh for the target device,
+  // pendingDrawerTarget is already set - and a prevValue-seeded-from-
+  // initial-state comparison would never see that as a "change" and would
+  // leave the drawer closed (the same gap UserFormPage/RoleFormPage's
+  // hydration hit before switching to this pattern). The local settingsOpen
+  // flip happens directly during render (this codebase's sanctioned pattern
+  // for reset-on-change state) since setState-during-render is exempt from
+  // the cascading-render lint rule that dispatching a Redux action is not;
+  // only the clearPendingDrawerTarget() dispatch - which must run exactly
+  // once - lives in the effect below.
+  const [handled, setHandled] = useState(false);
+  if (isDrawerTarget && !handled) {
+    setSettingsOpen(true);
+    setHandled(true);
+  }
+
+  useEffect(() => {
+    if (handled) {
+      dispatch(clearPendingDrawerTarget());
+    }
+  }, [handled, dispatch]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -397,7 +429,14 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   // app (offsets default to 43/44/45/65, landing on 40044/40045/40046/40066
   // per Form1.txt given the default startAddress of 40001).
   const writeAvrControl = useCallback(
-    (key: string, confirmMessage: string, offset: number, value: number) => {
+    (
+      key: string,
+      confirmMessage: string,
+      offset: number,
+      value: number,
+      eventType: 'AVR_MODE_CHANGE' | 'TAP_RAISE' | 'TAP_LOWER' | 'CONTROL_FAIL_RESET',
+      auditDescription: string
+    ) => {
       if (!window.confirm(confirmMessage)) return;
       dispatch(
         writeRegisterAsync({
@@ -408,6 +447,7 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
           value,
         })
       );
+      dispatch(recordAuditEventAsync({ eventType, deviceId: device.id, description: auditDescription }));
     },
     [dispatch, trId, device.id, clientId, device.slaveId]
   );
@@ -418,32 +458,42 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   const handleAvrModeToggle = useCallback(() => {
     const { readings: r, offsets: o } = latestRef.current;
     if (!o) return;
+    const switchingTo = r.avrModeIsAuto ? 'MANUAL' : 'AUTO';
     writeAvrControl(
       'avr-mode',
-      r.avrModeIsAuto ? 'Switch AVR mode to MANUAL?' : 'Switch AVR mode to AUTO?',
+      `Switch AVR mode to ${switchingTo}?`,
       o.avrModeWriteRegister,
       // Btn_AvrAuto_Click: sends 1 when currently AUTO (switching to
       // Manual), 0 when currently Manual (switching to Auto).
-      r.avrModeIsAuto ? 1 : 0
+      r.avrModeIsAuto ? 1 : 0,
+      'AVR_MODE_CHANGE',
+      `AVR Mode switched to ${switchingTo}`
     );
   }, [writeAvrControl]);
 
   const handleTapRaise = useCallback(() => {
     const o = latestRef.current.offsets;
     if (!o) return;
-    writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', o.tapRaiseWriteRegister, 1);
+    writeAvrControl('tap-raise', 'Are you sure you want to Raise Tap?', o.tapRaiseWriteRegister, 1, 'TAP_RAISE', 'Tap raise initiated');
   }, [writeAvrControl]);
 
   const handleTapLower = useCallback(() => {
     const o = latestRef.current.offsets;
     if (!o) return;
-    writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', o.tapLowerWriteRegister, 1);
+    writeAvrControl('tap-lower', 'Are you sure you want to Lower Tap?', o.tapLowerWriteRegister, 1, 'TAP_LOWER', 'Tap lower initiated');
   }, [writeAvrControl]);
 
   const handleControlFailReset = useCallback(() => {
     const o = latestRef.current.offsets;
     if (!o) return;
-    writeAvrControl('cf-reset', 'Are you sure you want to Reset?', o.controlFailResetWriteRegister, 0);
+    writeAvrControl(
+      'cf-reset',
+      'Are you sure you want to Reset?',
+      o.controlFailResetWriteRegister,
+      0,
+      'CONTROL_FAIL_RESET',
+      'Control fail reset'
+    );
   }, [writeAvrControl]);
 
   // 2243 has its own register layout and UI (OTI/WTI + Alarm/Trip Setpoint

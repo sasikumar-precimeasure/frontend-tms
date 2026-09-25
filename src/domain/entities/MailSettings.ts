@@ -1,9 +1,12 @@
 // Mail Configuration - mirrors Form1.txt's Mail Settings screen
 // (senderEmail_Settings / Email_List / email_Settings tables + MailTimer_Tick).
-// Config only for now: sender SMTP settings + recipients + per-device alert
-// thresholds are stored and editable here, but nothing in this app actually
-// sends an email yet (the gateway server has no SMTP capability) - that's a
-// separate follow-up.
+// Sender settings and recipients are persisted to tms-backend (see
+// features/mailSettings/slice.ts) - it's the real source of truth read by
+// the backend's scheduled threshold-evaluation job, which actually sends
+// mail via JavaMailSender. Per-device thresholds are edited here and saved
+// to the backend the same way (see saveMailThresholdsAsync), while also
+// staying on SubDevice.mailThresholds in connectionSettings/slice.ts as the
+// local/offline display copy.
 
 // From: one sender identity, app-wide (mirrors senderEmail_Settings, a
 // single-row table - Form1.txt has no concept of multiple senders).

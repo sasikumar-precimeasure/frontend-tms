@@ -20,6 +20,19 @@ const DashboardPage = () => {
     transformers.some((tr) => tr.id === persistedSelectedTrId) ? persistedSelectedTrId : (transformers[0]?.id ?? '');
   const setSelectedTrId = (trId: string) => dispatch(selectTr(trId));
   const selectedTr = transformers.find((tr) => tr.id === selectedTrId) ?? transformers[0];
+
+  // A NotificationBanner click (see notifications/slice) may target a device
+  // under a transformer that isn't currently selected - switch to it so that
+  // device's DevicePanel actually mounts and can consume the same
+  // pendingDrawerTarget to auto-open its settings drawer. This effect only
+  // ever changes the TR selection; DevicePanel itself clears the target once
+  // it's opened the drawer, which also prevents this from re-firing.
+  const pendingDrawerTrId = useAppSelector((state) => state.notifications.pendingDrawerTarget?.trId);
+  useEffect(() => {
+    if (pendingDrawerTrId && pendingDrawerTrId !== selectedTrId && transformers.some((tr) => tr.id === pendingDrawerTrId)) {
+      dispatch(selectTr(pendingDrawerTrId));
+    }
+  }, [pendingDrawerTrId, selectedTrId, transformers, dispatch]);
   // Devices come from every gateway under this TR - paired with their own
   // gateway so DevicePanel gets the right clientId/isConnected (each
   // gateway is its own TCP connection, no longer just the TR's single one).

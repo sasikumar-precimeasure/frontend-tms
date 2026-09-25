@@ -4,6 +4,7 @@ import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
 import type { AvrSettingField, TransformerRegisterConfig } from '../../../domain/entities/TransformerRegisterMap';
 import { AVR_SETTING_FIELDS_COLUMN_1, AVR_SETTING_FIELDS_COLUMN_2, mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
 import { readTransformerRegistersAsync, writeRegisterAsync } from '../../dashboard/slice';
+import { recordAuditEventAsync } from '../../auditLog/slice';
 
 // Same cadence as DevicePanel.tsx's dashboard poll - this card uses the same
 // readingKey (`${trId}:${device.id}`) so it shares state with the Dashboard
@@ -122,6 +123,7 @@ export function AvrSettingsCard({ trId, clientId, isConnected, device }: AvrSett
 
   const handleSubmit = (field: AvrSettingField, value: number) => {
     const key = `${trId}:${device.id}:avr-setting-${field.key}`;
+    const previousValue = readings[field.readingsKey];
     dispatch(
       writeRegisterAsync({
         key,
@@ -129,6 +131,16 @@ export function AvrSettingsCard({ trId, clientId, isConnected, device }: AvrSett
         slaveId: device.slaveId,
         address: config.startAddress + config.offsets[field.key],
         value: field.scaled ? Math.round(value * 10) : Math.round(value),
+      })
+    );
+    dispatch(
+      recordAuditEventAsync({
+        eventType: 'AVR_SETTING_CHANGE',
+        deviceId: device.id,
+        fieldName: field.label,
+        oldValue: previousValue?.toString(),
+        newValue: value.toString(),
+        description: `${field.label} changed to ${value}${field.unit}`,
       })
     );
   };
