@@ -8,6 +8,7 @@ import MembersPage from '../../features/users/pages/MembersPage';
 import UserFormPage from '../../features/users/pages/UserFormPage';
 import RoleFormPage from '../../features/users/pages/RoleFormPage';
 import AuditLogPage from '../../features/auditLog/pages/AuditLogPage';
+import DataLogPage from '../../features/dataLog/pages/DataLogPage';
 
 const MainRouter = createBrowserRouter(
   createRoutesFromElements(
@@ -79,6 +80,14 @@ const MainRouter = createBrowserRouter(
           element={
             <RequirePermission menu="Audit Log">
               <AuditLogPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="/data-log"
+          element={
+            <RequirePermission menu="Data Log">
+              <DataLogPage />
             </RequirePermission>
           }
         />

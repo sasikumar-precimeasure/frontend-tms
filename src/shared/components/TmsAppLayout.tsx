@@ -8,7 +8,7 @@ import { useMenuPermissions } from '../hooks/usePermissions';
 import type { PermissionMenu } from '../hooks/usePermissions';
 import { connectGatewayAsync } from '../../features/connectionSettings/slice';
 import type { TransformerRegisterConfig } from '../../domain/entities/TransformerRegisterMap';
-import { mapRegistersToReadings } from '../../domain/entities/TransformerRegisterMap';
+import { ANNUNCIATION_TILES, mapRegistersToReadings } from '../../domain/entities/TransformerRegisterMap';
 import type { Device2243RegisterConfig } from '../../domain/entities/Device2243RegisterMap';
 import { map2243RegistersToReadings } from '../../domain/entities/Device2243RegisterMap';
 import { pushReadingsBatchAsync } from '../../features/readingsPush/slice';
@@ -16,8 +16,10 @@ import type {
   ReadingsPushRequest,
   ReadingsPushTransformerEntry,
 } from '../../features/readingsPush/slice';
+import { showNotification } from '../../features/notifications/slice';
 
 const READINGS_PUSH_INTERVAL_MS = 60_000;
+const ANNUNCIATION_WATCH_INTERVAL_MS = 1_000;
 
 // Builds one POST /tms/api/readings/batch payload from the current Redux
 // state - every enabled device under every gateway, paired with its latest
@@ -79,6 +81,7 @@ const NAV_ITEMS: { to: string; label: string; menus: PermissionMenu[] }[] = [
   { to: '/dashboard', label: 'Dashboard', menus: ['Dashboard'] },
   { to: '/members', label: 'Members', menus: ['Users', 'Roles'] },
   { to: '/audit-log', label: 'Audit Log', menus: ['Audit Log'] },
+  { to: '/data-log', label: 'Data Log', menus: ['Data Log'] },
   { to: '/settings', label: 'Settings', menus: ['Connection Settings', 'AVR Settings', 'Mail Configuration'] },
 ];
 
@@ -175,6 +178,56 @@ export const TmsAppLayout = () => {
     };
     push();
     const intervalId = setInterval(push, READINGS_PUSH_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [dispatch, store]);
+
+  // Notifies on a NEW hardware-driven alarm too, not just an acknowledge
+  // click (AnnunciationPanel.tsx's own showNotification call covers the
+  // click case, but that component only exists while its device's settings
+  // drawer happens to be open on the Dashboard's currently-selected
+  // transformer tab - a fault on another transformer, or while the user is
+  // on a different page entirely, would never be seen there). This runs
+  // here instead, in the always-mounted app shell, at the same 1s cadence
+  // DevicePanel's own gateway poll uses (not the 60s readings-push
+  // interval), since that's how fast a fresh raw register reading actually
+  // lands in the store - polling less often would let a brief alarm
+  // transition slip through undetected between checks. getState() is read
+  // fresh each tick (not via useSelector) for the same reason
+  // buildReadingsPushRequest does: the raw reading state changes every ~1s,
+  // and selecting it directly here would re-render this whole layout that
+  // often. Previous-tile-state is tracked in a ref, not component state,
+  // since it's write-only bookkeeping with no rendering of its own.
+  const prevAnnunciationByDeviceRef = useRef<Map<string, (boolean | null)[]>>(new Map());
+  useEffect(() => {
+    const checkForNewAlarms = () => {
+      const state = store.getState();
+      for (const tr of state.connectionSettings.transformers) {
+        for (const gw of tr.gateways) {
+          for (const device of gw.subDevices) {
+            if (!device.enabled || device.deviceType === '2243') continue;
+
+            const readingKey = `${tr.id}:${device.id}`;
+            const registers = state.dashboard.readingsByTrId[readingKey]?.registers ?? null;
+            if (!registers) continue;
+
+            const config = device.registerConfig as TransformerRegisterConfig;
+            const { annunciation } = mapRegistersToReadings(registers, config.offsets);
+            const prev = prevAnnunciationByDeviceRef.current.get(device.id);
+            prevAnnunciationByDeviceRef.current.set(device.id, annunciation ?? []);
+            if (!prev || !annunciation) continue;
+
+            annunciation.forEach((isActiveNow, i) => {
+              const wasActive = prev[i] ?? false;
+              if (!wasActive && isActiveNow) {
+                const tile = ANNUNCIATION_TILES[i];
+                dispatch(showNotification(`"${tile.label}" alarm on ${device.name}`, tr.id, device.id));
+              }
+            });
+          }
+        }
+      }
+    };
+    const intervalId = setInterval(checkForNewAlarms, ANNUNCIATION_WATCH_INTERVAL_MS);
     return () => clearInterval(intervalId);
   }, [dispatch, store]);
 
