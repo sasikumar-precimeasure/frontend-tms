@@ -6,7 +6,7 @@ import type { RegisterOffsetMap } from '../../../domain/entities/TransformerRegi
 import { mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
 import type { Device2243RegisterConfig } from '../../../domain/entities/Device2243RegisterMap';
 import { map2243RegistersToReadings } from '../../../domain/entities/Device2243RegisterMap';
-import { readTransformerRegistersAsync, writeRegisterAsync } from '../slice';
+import { writeRegisterAsync } from '../slice';
 import { recordAuditEventAsync } from '../../auditLog/slice';
 import { clearPendingDrawerTarget } from '../../notifications/slice';
 import { useValueFlash } from '../hooks/useValueFlash';
@@ -21,8 +21,6 @@ import { Device2243Panel } from './Device2243Panel';
 // Matches Form1.txt's OTI/WTI setpoint validation range (0.0-150.0).
 const TEMP_MIN_C = 0;
 const TEMP_MAX_C = 150;
-
-const POLL_INTERVAL_MS = 1000;
 
 // Every section below is memoized so a poll tick (every 1s, regardless of
 // whether any value actually changed) or a write in one section doesn't
@@ -343,7 +341,7 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   const readingKey = `${trId}:${device.id}`;
   const readState = useAppSelector((state) => state.dashboard.readingsByTrId[readingKey]);
   const writesByKey = useAppSelector((state) => state.dashboard.writesByKey);
-  const { startAddress, count } = device.registerConfig;
+  const { startAddress } = device.registerConfig;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const pendingDrawerTarget = useAppSelector((state) => state.notifications.pendingDrawerTarget);
   const isDrawerTarget = pendingDrawerTarget?.trId === trId && pendingDrawerTarget?.deviceId === device.id;
@@ -376,25 +374,10 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
     }
   }, [handled, dispatch]);
 
-  useEffect(() => {
-    if (!isConnected) return;
-
-    const poll = () => {
-      dispatch(
-        readTransformerRegistersAsync({
-          trId: readingKey,
-          clientId,
-          slaveId: device.slaveId,
-          startAddress,
-          count,
-        })
-      );
-    };
-
-    poll();
-    const intervalId = setInterval(poll, POLL_INTERVAL_MS);
-    return () => clearInterval(intervalId);
-  }, [readingKey, clientId, isConnected, device.slaveId, startAddress, count, dispatch]);
+  // Registers are polled app-wide now (every enabled device on every
+  // transformer, not just this one), from TmsAppLayout's own 1s interval -
+  // see its own comment for why. This component just reads whatever's
+  // already in state.dashboard.readingsByTrId below.
 
   const isByteCountMismatch = readState?.errorMessage?.includes('Unexpected byte count') ?? false;
   const hasReadError = Boolean(readState?.errorMessage);

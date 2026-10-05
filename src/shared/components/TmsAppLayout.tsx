@@ -17,9 +17,11 @@ import type {
   ReadingsPushTransformerEntry,
 } from '../../features/readingsPush/slice';
 import { showNotification } from '../../features/notifications/slice';
+import { readTransformerRegistersAsync } from '../../features/dashboard/slice';
 
 const READINGS_PUSH_INTERVAL_MS = 60_000;
 const ANNUNCIATION_WATCH_INTERVAL_MS = 1_000;
+const REGISTER_POLL_INTERVAL_MS = 1_000;
 
 // Builds one POST /tms/api/readings/batch payload from the current Redux
 // state - every enabled device under every gateway, paired with its latest
@@ -119,8 +121,17 @@ export const TmsAppLayout = () => {
     if (hasAttemptedReconnect.current) return;
     hasAttemptedReconnect.current = true;
 
+    // Skip a gateway already marked connected - e.g. this layout remounting
+    // after a logout/login cycle (the Redux store itself is a singleton
+    // that survives that navigation; only the component tree unmounts), not
+    // just a full page reload. Re-dispatching a redundant connect here was
+    // never the cause of a stuck "connecting" state on its own (the gateway
+    // server's own ModbusClient.connect() tears down and replaces the old
+    // socket cleanly either way), but it's unnecessary churn against a
+    // socket that's probably already fine - and the 5s reconnect-watcher
+    // effect below already covers the case where it secretly isn't.
     gatewayEntries
-      .filter(({ gw }) => gw.ipAddress.trim() !== '')
+      .filter(({ gw }) => gw.ipAddress.trim() !== '' && !gw.isConnected)
       .forEach(({ trId, gw }) => {
         dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port }));
       });
@@ -155,6 +166,47 @@ export const TmsAppLayout = () => {
     }, RECONNECT_CHECK_MS);
     return () => clearInterval(intervalId);
   }, [dispatch]);
+
+  // Polls every enabled device's registers every 1s, for every transformer -
+  // not just whichever one happens to be the Dashboard's currently-selected
+  // tab. This used to live inside DevicePanel (mounted only for the
+  // selected transformer's devices), which meant every OTHER transformer's
+  // readings went stale the moment you weren't looking at its tab - visible
+  // in the dashboard, but also silently breaking the 60s readings-push below
+  // (it would push null/stale data for any device that hadn't been polled
+  // recently) and the annunciation-alarm watcher further down (it could
+  // never see a new alarm on a transformer you weren't currently viewing).
+  // DevicePanel now only reads state.dashboard.readingsByTrId; it no longer
+  // polls on its own. getState() is read fresh each tick (not via
+  // useSelector) for the same reason the 60s push below does it that way -
+  // this is deliberately NOT dependent on React state that changes every
+  // tick itself.
+  useEffect(() => {
+    const poll = () => {
+      const state = store.getState();
+      for (const tr of state.connectionSettings.transformers) {
+        for (const gw of tr.gateways) {
+          if (!gw.isConnected) continue;
+          for (const device of gw.subDevices) {
+            if (!device.enabled) continue;
+            const { startAddress, count } = device.registerConfig;
+            dispatch(
+              readTransformerRegistersAsync({
+                trId: `${tr.id}:${device.id}`,
+                clientId: gw.clientId,
+                slaveId: device.slaveId,
+                startAddress,
+                count,
+              })
+            );
+          }
+        }
+      }
+    };
+    poll();
+    const intervalId = setInterval(poll, REGISTER_POLL_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [dispatch, store]);
 
   // Pushes a snapshot of every device's latest reading to tms-backend every
   // 60s for historical storage/audit/mail-threshold evaluation - separate

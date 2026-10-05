@@ -10,8 +10,19 @@ import type { ModbusDependencies } from '../types';
 // separate from the main authenticated apiClient, since it's a different host/service.
 const GATEWAY_BASE_URL = import.meta.env.VITE_MODBUS_GATEWAY_URL || 'http://localhost:4000';
 
+// Generous margin above the gateway server's own longest internal timeout
+// (ModbusClient.ts's CONNECT_TIMEOUT_MS = 3000ms for a connect attempt) -
+// without this, an axios request has no timeout at all by default, so if
+// the gateway process ever fails to respond for any reason (a hung
+// process, a dropped connection to it, an unexpected exception bypassing
+// its own timeout handling), the UI would show "connecting"/"reading"
+// forever with no way to recover short of a full page reload. This bounds
+// every request to the gateway to a hard ceiling so the UI can always move
+// on to a visible error state instead.
+const GATEWAY_REQUEST_TIMEOUT_MS = 8000;
+
 export function createModbusDependencies(): ModbusDependencies {
-  const gatewayClient = axios.create({ baseURL: GATEWAY_BASE_URL });
+  const gatewayClient = axios.create({ baseURL: GATEWAY_BASE_URL, timeout: GATEWAY_REQUEST_TIMEOUT_MS });
 
   // Log every request/response to the Modbus gateway in the browser console -
   // separate from the gateway's own terminal logs, which are only visible in
