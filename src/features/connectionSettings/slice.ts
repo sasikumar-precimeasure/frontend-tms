@@ -39,11 +39,26 @@ interface ConnectionSettingsState {
   selectedTrId: string;
   transformers: Transformer[];
   nextClientId: number;
+  // How often (in seconds) every device's latest reading is pushed to
+  // tms-backend for historical storage/audit/mail-threshold evaluation -
+  // see TmsAppLayout's own readings-push effect, which reads this value
+  // instead of a hardcoded constant. App-wide (not per-transformer), since
+  // it's one shared interval/timer regardless of how many transformers are
+  // configured. Floor enforced at MIN_READINGS_PUSH_INTERVAL_SECONDS
+  // wherever this is set, not just in the UI, so a corrupted/hand-edited
+  // localStorage value below the floor can't silently take effect.
+  readingsPushIntervalSeconds: number;
 }
+
+export const MIN_READINGS_PUSH_INTERVAL_SECONDS = 60;
+const DEFAULT_READINGS_PUSH_INTERVAL_SECONDS = 60;
 
 const PERSIST_KEY = 'tms-connection-settings';
 
-type PersistedState = Pick<ConnectionSettingsState, 'transformers' | 'selectedTrId' | 'nextClientId'>;
+type PersistedState = Pick<
+  ConnectionSettingsState,
+  'transformers' | 'selectedTrId' | 'nextClientId' | 'readingsPushIntervalSeconds'
+>;
 
 // Live connection state belongs to the gateway's real TCP socket, not this
 // JSON blob - always reset it on load so a persisted "connected" from a
@@ -208,6 +223,7 @@ function loadPersistedState(): PersistedState | null {
       transformers: LegacyTransformerShape[];
       selectedTrId: string;
       nextClientId: number;
+      readingsPushIntervalSeconds: number;
     }>;
     if (!Array.isArray(parsed.transformers) || parsed.transformers.length === 0) return null;
     const transformers = migrateMailThresholds(
@@ -217,6 +233,11 @@ function loadPersistedState(): PersistedState | null {
       transformers,
       selectedTrId: typeof parsed.selectedTrId === 'string' ? parsed.selectedTrId : transformers[0].id,
       nextClientId: typeof parsed.nextClientId === 'number' ? parsed.nextClientId : transformers.length + 1,
+      readingsPushIntervalSeconds:
+        typeof parsed.readingsPushIntervalSeconds === 'number' &&
+        parsed.readingsPushIntervalSeconds >= MIN_READINGS_PUSH_INTERVAL_SECONDS
+          ? parsed.readingsPushIntervalSeconds
+          : DEFAULT_READINGS_PUSH_INTERVAL_SECONDS,
     };
   } catch {
     // Corrupt/stale localStorage content - fall back to defaults rather
@@ -231,6 +252,7 @@ export function persistConnectionSettings(state: ConnectionSettingsState): void 
     transformers: state.transformers,
     selectedTrId: state.selectedTrId,
     nextClientId: state.nextClientId,
+    readingsPushIntervalSeconds: state.readingsPushIntervalSeconds,
   };
   try {
     window.localStorage.setItem(PERSIST_KEY, JSON.stringify(payload));
@@ -295,6 +317,7 @@ const persisted = loadPersistedState();
 const initialState: ConnectionSettingsState = persisted ?? {
   ...makeDefaultState(),
   nextClientId: 3,
+  readingsPushIntervalSeconds: DEFAULT_READINGS_PUSH_INTERVAL_SECONDS,
 };
 
 function extractErrorMessage(error: unknown): string {
@@ -361,6 +384,11 @@ const connectionSettingsSlice = createSlice({
   reducers: {
     selectTr: (state, action: PayloadAction<string>) => {
       state.selectedTrId = action.payload;
+    },
+    // Enforces the 1-minute floor here, not just in the Settings UI, so a
+    // bad value can never take effect regardless of how it was set.
+    setReadingsPushIntervalSeconds: (state, action: PayloadAction<number>) => {
+      state.readingsPushIntervalSeconds = Math.max(MIN_READINGS_PUSH_INTERVAL_SECONDS, Math.round(action.payload));
     },
     addTransformer: (state) => {
       const clientId = state.nextClientId;
@@ -626,5 +654,6 @@ export const {
   updateSubDeviceReadConfig,
   updateSubDeviceRegisterOffset,
   updateSubDeviceMailThresholds,
+  setReadingsPushIntervalSeconds,
 } = connectionSettingsSlice.actions;
 export default connectionSettingsSlice.reducer;

@@ -94,6 +94,27 @@ body {
   background-color: var(--color-surface-100);
 }
 
+/* Every <select> in the app uses Tailwind utilities (bg-surface-0,
+   text-surface-900, ...) on the closed control, which correctly flip dark
+   in dark mode - but a native <option> is rendered by the OS/browser's own
+   dropdown list, not by the page's CSS cascade, so it ignores those utility
+   classes entirely and falls back to its platform default (almost always a
+   white background with black text). The closed control then shows
+   readable (dark-mode-correct) text, while the opened list stays stuck in
+   light colors - in dark mode specifically, that was still readable by
+   coincidence (black-on-white), but gave no visual indication of which
+   option was already selected, matching the reported "only the selected
+   text is visible, the rest is white" symptom. Scoped to `option` only
+   (not `select` itself) so this never fights the closed control's own
+   Tailwind utility classes - those are unlayered CSS same as this, so an
+   element-selector rule on `select` itself would unpredictably win or lose
+   against them depending on source order; `option` carries no Tailwind
+   utilities today, so there's nothing for this to conflict with. */
+option {
+  background-color: var(--color-surface-0);
+  color: var(--color-surface-900);
+}
+
 @keyframes value-flash {
   0% {
     background-color: color-mix(in oklab, var(--color-primary) 14%, transparent);

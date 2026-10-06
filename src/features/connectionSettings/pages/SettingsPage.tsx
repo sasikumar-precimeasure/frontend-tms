@@ -4,6 +4,7 @@ import { SettingsSidebar } from '../components/SettingsSidebar';
 import type { SettingsSection } from '../components/SettingsSidebar';
 import { useFirstAllowedSettingsSection } from '../settingsSectionPermissions';
 import { TransformerConnectionCard } from '../components/TransformerConnectionCard';
+import { DataSyncSettingsCard } from '../components/DataSyncSettingsCard';
 import { RegisterMapCard } from '../components/RegisterMapCard';
 import { AvrSettingsCard } from '../components/AvrSettingsCard';
 import { MailConfigurationCard } from '../components/MailConfigurationCard';
@@ -126,6 +127,7 @@ const SettingsPage = () => {
               })()
             ) : (
               <>
+                <DataSyncSettingsCard />
                 {selectedTr.gateways.map((gateway) => (
                   <TransformerConnectionCard key={gateway.id} trId={selectedTr.id} gateway={gateway} />
                 ))}

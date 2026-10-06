@@ -19,7 +19,6 @@ import type {
 import { showNotification } from '../../features/notifications/slice';
 import { readTransformerRegistersAsync } from '../../features/dashboard/slice';
 
-const READINGS_PUSH_INTERVAL_MS = 60_000;
 const ANNUNCIATION_WATCH_INTERVAL_MS = 1_000;
 const REGISTER_POLL_INTERVAL_MS = 1_000;
 
@@ -95,6 +94,7 @@ export const TmsAppLayout = () => {
   const navigate = useNavigate();
   const store = useAppStore();
   const transformers = useAppSelector((state) => state.connectionSettings.transformers);
+  const readingsPushIntervalSeconds = useAppSelector((state) => state.connectionSettings.readingsPushIntervalSeconds);
   const currentUser = useAppSelector((state) => state.auth.user);
   const allowedMenus = useMenuPermissions();
   const visibleNavItems = NAV_ITEMS.filter((item) => item.menus.some((menu) => allowedMenus.has(menu)));
@@ -182,45 +182,83 @@ export const TmsAppLayout = () => {
   // this is deliberately NOT dependent on React state that changes every
   // tick itself.
   useEffect(() => {
+    const timeoutIds: ReturnType<typeof setTimeout>[] = [];
+
+    // Staggered, not a synchronous fan-out: browsers cap concurrent
+    // connections to one origin at 6 (a longstanding default across
+    // Chrome/Firefox/Safari) - with 3+ transformers' worth of devices all
+    // polled every second, firing every readTransformerRegistersAsync in
+    // the same tick can sit right at or over that ceiling, so later
+    // requests in the burst queue behind earlier ones at the browser's
+    // connection-pool level (not a Modbus/hardware problem at all) and
+    // never catch up, which surfaces as "stopped working" for transformers
+    // that have nothing wrong with their actual connection. Spacing each
+    // device's read by STAGGER_MS keeps the number actually in flight at
+    // once comfortably below that limit regardless of how many
+    // transformers/devices are configured.
+    const STAGGER_MS = 120;
+
     const poll = () => {
+      timeoutIds.forEach(clearTimeout);
+      timeoutIds.length = 0;
+
       const state = store.getState();
+      let delay = 0;
       for (const tr of state.connectionSettings.transformers) {
         for (const gw of tr.gateways) {
           if (!gw.isConnected) continue;
           for (const device of gw.subDevices) {
             if (!device.enabled) continue;
             const { startAddress, count } = device.registerConfig;
-            dispatch(
-              readTransformerRegistersAsync({
-                trId: `${tr.id}:${device.id}`,
-                clientId: gw.clientId,
-                slaveId: device.slaveId,
-                startAddress,
-                count,
-              })
+            const trId = tr.id;
+            const deviceId = device.id;
+            const slaveId = device.slaveId;
+            const clientId = gw.clientId;
+            timeoutIds.push(
+              setTimeout(() => {
+                dispatch(
+                  readTransformerRegistersAsync({
+                    trId: `${trId}:${deviceId}`,
+                    clientId,
+                    slaveId,
+                    startAddress,
+                    count,
+                  })
+                );
+              }, delay)
             );
+            delay += STAGGER_MS;
           }
         }
       }
     };
     poll();
     const intervalId = setInterval(poll, REGISTER_POLL_INTERVAL_MS);
-    return () => clearInterval(intervalId);
+    return () => {
+      clearInterval(intervalId);
+      timeoutIds.forEach(clearTimeout);
+    };
   }, [dispatch, store]);
 
   // Pushes a snapshot of every device's latest reading to tms-backend every
-  // 60s for historical storage/audit/mail-threshold evaluation - separate
-  // from (and much slower than) the 1s gateway polling DevicePanel already
-  // does for live UI responsiveness. getState() is called fresh inside the
-  // interval rather than depending on the store's reading state directly,
-  // since that changes every ~1s and would otherwise mean re-creating this
-  // interval constantly. Also fires once immediately on mount (readings
-  // will be null pre-connect, which the backend already tolerates) so the
-  // topology upsert happens right away - Settings > Mail Configuration lets
-  // a user save a device's alert thresholds immediately after adding it,
-  // and the backend's mail_thresholds table has a foreign key against a
-  // device row that must exist first; waiting a full 60s for the first
-  // periodic push would otherwise make that save fail.
+  // readingsPushIntervalSeconds (user-configurable in Settings > Connection
+  // Settings, 60s minimum - see connectionSettings/slice.ts's
+  // MIN_READINGS_PUSH_INTERVAL_SECONDS) for historical storage/audit/mail-
+  // threshold evaluation - separate from (and much slower than) the 1s
+  // gateway polling above for live UI responsiveness. getState() is called
+  // fresh inside the interval rather than depending on the store's reading
+  // state directly, since that changes every ~1s and would otherwise mean
+  // re-creating this interval constantly; the push interval itself IS a
+  // dependency here, specifically so changing it in Settings tears down and
+  // restarts this timer with the new period immediately, rather than
+  // waiting for the old interval to finish its current cycle. Also fires
+  // once immediately on mount (readings will be null pre-connect, which the
+  // backend already tolerates) so the topology upsert happens right away -
+  // Settings > Mail Configuration lets a user save a device's alert
+  // thresholds immediately after adding it, and the backend's
+  // mail_thresholds table has a foreign key against a device row that must
+  // exist first; waiting a full interval for the first periodic push would
+  // otherwise make that save fail.
   useEffect(() => {
     const push = () => {
       const request = buildReadingsPushRequest(store.getState());
@@ -229,9 +267,9 @@ export const TmsAppLayout = () => {
       }
     };
     push();
-    const intervalId = setInterval(push, READINGS_PUSH_INTERVAL_MS);
+    const intervalId = setInterval(push, readingsPushIntervalSeconds * 1000);
     return () => clearInterval(intervalId);
-  }, [dispatch, store]);
+  }, [dispatch, store, readingsPushIntervalSeconds]);
 
   // Notifies on a NEW hardware-driven alarm too, not just an acknowledge
   // click (AnnunciationPanel.tsx's own showNotification call covers the
