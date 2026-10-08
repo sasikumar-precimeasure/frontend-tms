@@ -3,6 +3,7 @@
 // System.Net.Sockets.TcpClient used in the original VB class, so this
 // class can open a genuine TCP connection to Modbus TCP hardware on port 502.
 import { Socket } from 'net';
+import { logger } from './logger';
 
 export type ModbusStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -36,6 +37,8 @@ const MAX_REGISTERS = 125; // Modbus spec limit per transaction
 // the gateway itself has gone quiet, not just one device behind it).
 const MAX_CONSECUTIVE_TIMEOUTS = 3;
 const KEEPALIVE_DELAY_MS = 10_000;
+// Responses slower than this are logged as warnings (but still succeed).
+const SLOW_RESPONSE_MS = 1000;
 
 function toHex(buffer: Buffer): string {
   return buffer.toString('hex').match(/.{1,2}/g)?.join(' ') ?? '';
@@ -72,6 +75,33 @@ interface PendingTransaction {
   timer: NodeJS.Timeout;
 }
 
+// Counters for diagnosing connection problems on real hardware - logged as a
+// periodic health snapshot by server.ts and served at /api/modbus/diagnostics.
+export interface ConnectionCounters {
+  requests: number;
+  ok: number;
+  timeouts: number;
+  exceptions: number;
+  otherErrors: number;
+  lateResponses: number;
+  connectAttempts: number;
+  connectFailures: number;
+  drops: number;
+  latencySumMs: number;
+  latencyMaxMs: number;
+}
+
+function emptyCounters(): ConnectionCounters {
+  return {
+    requests: 0, ok: 0, timeouts: 0, exceptions: 0, otherErrors: 0, lateResponses: 0,
+    connectAttempts: 0, connectFailures: 0, drops: 0, latencySumMs: 0, latencyMaxMs: 0,
+  };
+}
+
+function errorCode(err: Error): string | undefined {
+  return (err as NodeJS.ErrnoException).code;
+}
+
 export class ModbusClient {
   // -- Fields (mirrors ModbusClient.vb private fields) --
   private readonly _clientId: number;
@@ -91,15 +121,27 @@ export class ModbusClient {
   // instead of being mistaken for the next request's answer.
   private readonly _pending = new Map<number, PendingTransaction>();
   private _consecutiveTimeouts = 0;
+  private _consecutiveBadFrames = 0;
   // Serializes every read/write against this socket. Two sub-devices on the
   // same TR (e.g. IRTCC + 2243) poll independently but share one
   // ModbusClient/TCP connection, and the RS485 bus behind the gateway can
   // only carry one transaction at a time anyway - chaining every request
   // through this promise keeps exactly one in flight per connection.
   private _requestQueue: Promise<unknown> = Promise.resolve();
+  // Requests waiting in (or running from) _requestQueue - a steadily growing
+  // number means polls arrive faster than the device answers.
+  private _queueDepth = 0;
+  private _connectedAt: number | null = null;
+  private _lastError: { message: string; at: string } | null = null;
+  private readonly _total = emptyCounters();
+  private _window = emptyCounters();
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
-    const result = this._requestQueue.then(task, task);
+    this._queueDepth += 1;
+    const tracked = () => task().finally(() => {
+      this._queueDepth -= 1;
+    });
+    const result = this._requestQueue.then(tracked, tracked);
     // Swallow rejections in the chain itself (each caller still gets the
     // real rejection via `result`) so one failed request doesn't wedge the
     // queue for everything queued after it.
@@ -134,6 +176,44 @@ export class ModbusClient {
     return this._port;
   }
 
+  get endpoint(): string {
+    return `${this._ipAddress}:${this._port}`;
+  }
+
+  private count(key: keyof ConnectionCounters, amount = 1): void {
+    this._total[key] += amount;
+    this._window[key] += amount;
+  }
+
+  private recordLatency(ms: number): void {
+    this.count('latencySumMs', ms);
+    this._total.latencyMaxMs = Math.max(this._total.latencyMaxMs, ms);
+    this._window.latencyMaxMs = Math.max(this._window.latencyMaxMs, ms);
+  }
+
+  private noteError(message: string): void {
+    this._lastError = { message, at: new Date().toISOString() };
+  }
+
+  // Current state plus counters since the previous reset (`window`) and
+  // since start (`total`). resetWindow=false peeks without resetting.
+  takeStats(resetWindow = true) {
+    const window = this._window;
+    if (resetWindow) this._window = emptyCounters();
+    return {
+      endpoint: this.endpoint,
+      connected: this.isConnected,
+      connecting: this._connectPromise !== null,
+      uptimeSec: this._connectedAt ? Math.round((Date.now() - this._connectedAt) / 1000) : 0,
+      queueDepth: this._queueDepth,
+      inFlight: this._pending.size,
+      consecutiveTimeouts: this._consecutiveTimeouts,
+      lastError: this._lastError,
+      window,
+      total: { ...this._total },
+    };
+  }
+
   // -- Events (mirrors RaiseEvent StatusChanged / ErrorOccurred) --
   onStatusChanged(listener: StatusChangedListener): () => void {
     this._statusListeners.add(listener);
@@ -164,7 +244,7 @@ export class ModbusClient {
   connect(ipAddress: string, port: number): Promise<void> {
     const sameEndpoint = this._ipAddress === ipAddress && this._port === port;
     if (sameEndpoint && this.isConnected) {
-      console.log(`[Modbus:${this._clientId}] Connect request  -> ${ipAddress}:${port} (already connected, reusing)`);
+      logger.debug('modbus', 'Connect: already connected, reusing socket', { conn: this._clientId, endpoint: this.endpoint });
       return Promise.resolve();
     }
     if (sameEndpoint && this._connectPromise) {
@@ -188,7 +268,9 @@ export class ModbusClient {
 
   private openSocket(ipAddress: string, port: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      console.log(`[Modbus:${this._clientId}] Connect request  -> ${ipAddress}:${port}`);
+      const startedAt = Date.now();
+      this.count('connectAttempts');
+      logger.info('modbus', 'Connecting', { conn: this._clientId, endpoint: `${ipAddress}:${port}`, attempt: this._total.connectAttempts });
       this.raiseStatusChanged(`Connecting to ${ipAddress}:${port}...`, false);
 
       const socket = new Socket();
@@ -205,7 +287,12 @@ export class ModbusClient {
       const fail = (message: string, err: Error) => {
         if (settled) return;
         settled = true;
-        console.log(`[Modbus:${this._clientId}] Connect response <- ${message}`);
+        this.count('connectFailures');
+        this.noteError(`Connect: ${message}`);
+        logger.warn('modbus', 'Connect failed', {
+          conn: this._clientId, endpoint: `${ipAddress}:${port}`, error: message, code: errorCode(err),
+          elapsedMs: Date.now() - startedAt, failuresTotal: this._total.connectFailures,
+        });
         socket.destroy();
         if (isCurrent()) {
           this._socket = null;
@@ -228,8 +315,12 @@ export class ModbusClient {
         }
         this._isConnected = true;
         this._consecutiveTimeouts = 0;
+        this._consecutiveBadFrames = 0;
+        this._connectedAt = Date.now();
         this.attachFrameParser(socket);
-        console.log(`[Modbus:${this._clientId}] Connect response <- connected to ${ipAddress}:${port}`);
+        logger.info('modbus', 'Connected', {
+          conn: this._clientId, endpoint: `${ipAddress}:${port}`, elapsedMs: Date.now() - startedAt, localPort: socket.localPort,
+        });
         this.raiseStatusChanged(`Connected to ${ipAddress}:${port}`, true);
         resolve();
       });
@@ -246,16 +337,20 @@ export class ModbusClient {
         }
         // Error after a successful connect: mirror VB's comm-error handling.
         if (!isCurrent()) return;
-        console.log(`[Modbus:${this._clientId}] Comm error <- ${err.message}`);
+        logger.warn('modbus', 'Socket error on open connection', { conn: this._clientId, endpoint: this.endpoint, error: err.message, code: errorCode(err) });
         this.dropConnection(`Comm error: ${err.message}`);
       });
 
-      socket.once('close', () => {
+      socket.once('close', (hadError: boolean) => {
         if (!settled) {
           fail('Connection closed', new Error('Connection closed'));
           return;
         }
         if (!isCurrent()) return;
+        // The device/gateway ended the TCP session itself - typical causes:
+        // it only allows N simultaneous connections, an idle timeout, or the
+        // device restarted.
+        logger.warn('modbus', 'Remote host closed the connection', { conn: this._clientId, endpoint: this.endpoint, hadError });
         this.dropConnection('Connection closed by remote host');
       });
 
@@ -276,12 +371,30 @@ export class ModbusClient {
         const protocolId = buffer.readUInt16BE(2);
         const length = buffer.readUInt16BE(4);
         if (protocolId !== 0 || length < 2 || length > 254) {
-          // Not a valid MBAP header - framing is genuinely lost, the only
-          // recovery is a fresh socket.
-          console.log(`[Modbus:${this._clientId}] Invalid MBAP header, dropping connection [${toHex(buffer)}]`);
-          this.dropConnection('Comm error: invalid response framing');
+          // Not a valid Modbus TCP reply. The connection itself is fine and
+          // only one request is ever in flight (see _requestQueue), so
+          // discarding everything received so far and failing that request
+          // resynchronizes the stream. Never reconnects for this, however
+          // often it happens - the TR stays "connected" and the device shows
+          // the error instead; the count is only for the log.
+          this._consecutiveBadFrames += 1;
+          const message = 'Invalid response from device (corrupted data)';
+          this.count('otherErrors');
+          this.noteError(message);
+          logger.warn('modbus', 'Invalid response from device - discarded, connection kept', {
+            conn: this._clientId, endpoint: this.endpoint, bytes: toHex(buffer.subarray(0, 32)),
+            consecutive: this._consecutiveBadFrames,
+          });
+          buffer = Buffer.alloc(0);
+          const failed = [...this._pending.values()];
+          this._pending.clear();
+          failed.forEach((p) => {
+            clearTimeout(p.timer);
+            p.reject(new Error(message));
+          });
           return;
         }
+        this._consecutiveBadFrames = 0;
         const frameLength = 6 + length;
         if (buffer.length < frameLength) break;
 
@@ -290,7 +403,10 @@ export class ModbusClient {
         const tid = frame.readUInt16BE(0);
         const pending = this._pending.get(tid);
         if (!pending) {
-          console.log(`[Modbus:${this._clientId}] Discarding late/unknown response tid=${tid} [${toHex(frame)}]`);
+          this.count('lateResponses');
+          logger.warn('modbus', 'Late/unknown response discarded (arrived after its request timed out)', {
+            conn: this._clientId, endpoint: this.endpoint, tid, slave: frame[6], fc: frame[7],
+          });
           continue;
         }
         this._pending.delete(tid);
@@ -303,6 +419,13 @@ export class ModbusClient {
   // The socket died underneath us (remote close, comm error, unrecoverable
   // framing) - as opposed to disconnect(), which the user asked for.
   private dropConnection(reason: string): void {
+    this.count('drops');
+    this.noteError(reason);
+    logger.warn('modbus', 'Connection dropped', {
+      conn: this._clientId, endpoint: this.endpoint, reason,
+      uptimeSec: this._connectedAt ? Math.round((Date.now() - this._connectedAt) / 1000) : 0,
+      inFlight: this._pending.size, queueDepth: this._queueDepth, dropsTotal: this._total.drops,
+    });
     this.teardown(new Error(reason));
     this.raiseStatusChanged('Disconnected', false);
     this.raiseErrorOccurred(reason);
@@ -310,6 +433,7 @@ export class ModbusClient {
 
   private teardown(reason: Error): void {
     this._isConnected = false;
+    this._connectedAt = null;
     const socket = this._socket;
     this._socket = null;
     try {
@@ -327,7 +451,7 @@ export class ModbusClient {
 
   // Mirrors: Public Sub Disconnect()
   disconnect(): void {
-    console.log(`[Modbus:${this._clientId}] Disconnect request -> ${this._ipAddress}:${this._port}`);
+    logger.info('modbus', 'Disconnect requested', { conn: this._clientId, endpoint: this.endpoint });
     this._connectPromise = null;
     this.teardown(new Error('Disconnected'));
     this.raiseStatusChanged('Disconnected', false);
@@ -338,19 +462,26 @@ export class ModbusClient {
   // is only dropped after MAX_CONSECUTIVE_TIMEOUTS in a row.
   private transact(tid: number, request: Buffer, timeoutMs: number, label: string, slaveId: number): Promise<Buffer> {
     const socket = this._socket;
+    this.count('requests');
     if (!this.isConnected || !socket) {
+      this.count('otherErrors');
       this.raiseErrorOccurred(`${label}: Not connected`, slaveId);
       return Promise.reject(new Error(`${label}: Not connected`));
     }
 
+    const fc = request[7];
+    const sentAt = Date.now();
     return new Promise<Buffer>((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(tid);
         this._consecutiveTimeouts += 1;
+        this.count('timeouts');
         const message = `${label}: Response timeout (slave ${slaveId})`;
-        console.log(
-          `[Modbus:${this._clientId}] tid=${tid} - ${message} (${this._consecutiveTimeouts}/${MAX_CONSECUTIVE_TIMEOUTS} consecutive)`
-        );
+        this.noteError(message);
+        logger.warn('modbus', 'Response timeout', {
+          conn: this._clientId, endpoint: this.endpoint, slave: slaveId, fc, tid, timeoutMs,
+          consecutive: `${this._consecutiveTimeouts}/${MAX_CONSECUTIVE_TIMEOUTS}`, queueDepth: this._queueDepth,
+        });
         if (this._consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
           this.dropConnection('Comm error: gateway stopped responding');
         }
@@ -361,6 +492,11 @@ export class ModbusClient {
       this._pending.set(tid, {
         resolve: (frame) => {
           this._consecutiveTimeouts = 0;
+          const latencyMs = Date.now() - sentAt;
+          this.recordLatency(latencyMs);
+          if (latencyMs > SLOW_RESPONSE_MS) {
+            logger.warn('modbus', 'Slow response', { conn: this._clientId, endpoint: this.endpoint, slave: slaveId, fc, latencyMs });
+          }
           resolve(frame);
         },
         reject,
@@ -373,6 +509,9 @@ export class ModbusClient {
         if (!pending) return;
         this._pending.delete(tid);
         clearTimeout(pending.timer);
+        this.count('otherErrors');
+        this.noteError(`${label}: ${err.message}`);
+        logger.warn('modbus', 'Socket write failed', { conn: this._clientId, endpoint: this.endpoint, slave: slaveId, error: err.message, code: errorCode(err) });
         this.raiseErrorOccurred(`${label}: ${err.message}`, slaveId);
         reject(err);
       });
@@ -432,16 +571,18 @@ export class ModbusClient {
     request.writeUInt16BE(startAddress, 8); // Start Address
     request.writeUInt16BE(count, 10); // Quantity
 
-    console.log(
-      `[Modbus:${this._clientId}] FC03 request  tid=${tid} slave=${slaveId} start=${startAddress} qty=${count} bytes=[${toHex(request)}]`
-    );
+    if (logger.isDebug()) {
+      logger.debug('modbus', 'FC03 request', { conn: this._clientId, tid, slave: slaveId, start: startAddress, qty: count, bytes: toHex(request) });
+    }
 
     const frame = await this.transact(tid, request, READ_TIMEOUT_MS, 'Read', slaveId);
 
     // Check for exception response
     if ((frame[7] & 0x80) === 0x80) {
       const message = `FC03 Exception: ${getExceptionMessage(frame[8])}`;
-      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(frame)}]`);
+      this.count('exceptions');
+      this.noteError(message);
+      logger.warn('modbus', 'Device returned Modbus exception', { conn: this._clientId, endpoint: this.endpoint, slave: slaveId, start: startAddress, qty: count, exception: message });
       this.raiseErrorOccurred(message, slaveId);
       throw new Error(message);
     }
@@ -456,7 +597,9 @@ export class ModbusClient {
     const dataBytes = frame.subarray(9);
     if (byteCount !== count * 2 || dataBytes.length !== byteCount) {
       const message = `Read: Unexpected byte count ${byteCount} for ${count} register(s)`;
-      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(frame)}]`);
+      this.count('otherErrors');
+      this.noteError(message);
+      logger.warn('modbus', 'Malformed FC03 response', { conn: this._clientId, endpoint: this.endpoint, slave: slaveId, error: message, bytes: toHex(frame.subarray(0, 32)) });
       this.raiseErrorOccurred(message, slaveId);
       throw new Error(message);
     }
@@ -466,9 +609,10 @@ export class ModbusClient {
       registers.push(dataBytes.readUInt16BE(i * 2));
     }
 
-    console.log(
-      `[Modbus:${this._clientId}] FC03 response tid=${tid} slave=${slaveId} bytes=[${toHex(frame)}] registers=[${registers.join(', ')}]`
-    );
+    this.count('ok');
+    if (logger.isDebug()) {
+      logger.debug('modbus', 'FC03 response', { conn: this._clientId, tid, slave: slaveId, registers: registers.join(',') });
+    }
 
     return registers;
   }
@@ -492,26 +636,28 @@ export class ModbusClient {
     request.writeUInt16BE(address, 8);
     request.writeUInt16BE(value, 10);
 
-    console.log(
-      `[Modbus:${this._clientId}] FC06 request  tid=${tid} slave=${slaveId} address=${address} value=${value} bytes=[${toHex(request)}]`
-    );
+    logger.info('modbus', 'FC06 write', { conn: this._clientId, endpoint: this.endpoint, tid, slave: slaveId, address, value });
 
     const frame = await this.transact(tid, request, WRITE_TIMEOUT_MS, 'Write', slaveId);
 
     if ((frame[7] & 0x80) === 0x80) {
       const message = `Write FC06 Exception: ${getExceptionMessage(frame[8])}`;
-      console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - ${message} [${toHex(frame)}]`);
+      this.count('exceptions');
+      this.noteError(message);
+      logger.warn('modbus', 'Device rejected write', { conn: this._clientId, endpoint: this.endpoint, slave: slaveId, address, exception: message });
       this.raiseErrorOccurred(message, slaveId);
       throw new Error(message);
     }
 
     if (frame.length < 12) {
-      console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - incomplete response [${toHex(frame)}]`);
+      this.count('otherErrors');
+      logger.warn('modbus', 'Incomplete FC06 response', { conn: this._clientId, endpoint: this.endpoint, slave: slaveId, bytes: toHex(frame) });
       this.raiseErrorOccurred('WriteSingle: Incomplete response', slaveId);
       throw new Error('WriteSingle: Incomplete response');
     }
 
-    console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - confirmed [${toHex(frame)}]`);
+    this.count('ok');
+    logger.info('modbus', 'FC06 write confirmed', { conn: this._clientId, endpoint: this.endpoint, tid, slave: slaveId, address, value });
   }
 
   static get readTimeoutMs(): number {
