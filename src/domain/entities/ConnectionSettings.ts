@@ -40,6 +40,11 @@ export interface Gateway {
   isConnected: boolean;
   isConnecting: boolean;
   errorMessage: string | null;
+  // Whether the auto-reconnect watcher may retry this gateway: set by any
+  // connect attempt, cleared by a manual Disconnect or an IP/port edit so
+  // the watcher never connects behind the user's back to a half-typed or
+  // stale address. Absent on settings saved before this existed (= true).
+  autoReconnect?: boolean;
   subDevices: SubDevice[];
 }
 

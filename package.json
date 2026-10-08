@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "sim": "node scripts/multi-gateway-sim.cjs",
     "dev:gateway": "npm run dev --prefix server",
     "dev:all": "concurrently -n web,gateway -c blue,green \"npm run dev\" \"npm run dev:gateway\"",
     "dev:setup": "node scripts/dev-setup.cjs",

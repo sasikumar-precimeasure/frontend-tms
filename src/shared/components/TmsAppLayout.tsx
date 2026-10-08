@@ -131,7 +131,7 @@ export const TmsAppLayout = () => {
     // socket that's probably already fine - and the 5s reconnect-watcher
     // effect below already covers the case where it secretly isn't.
     gatewayEntries
-      .filter(({ gw }) => gw.ipAddress.trim() !== '' && !gw.isConnected)
+      .filter(({ gw }) => gw.ipAddress.trim() !== '' && !gw.isConnected && gw.autoReconnect !== false)
       .forEach(({ trId, gw }) => {
         dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port }));
       });
@@ -155,14 +155,34 @@ export const TmsAppLayout = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transformers]);
 
+  // Exponential backoff per gateway (immediate, then 10s, 20s ... capped at 60s), reset
+  // once it's connected again - a fixed 5s retry for every down gateway at
+  // once kept unreachable gateways hammering the connect endpoint and kept
+  // every TR's status flipping between "connecting" and "not connected".
   useEffect(() => {
-    const RECONNECT_CHECK_MS = 5000;
+    const RECONNECT_CHECK_MS = 1000;
+    const RECONNECT_BASE_DELAY_MS = 5000;
+    const RECONNECT_MAX_DELAY_MS = 60_000;
+    const backoff = new Map<string, { attempts: number; nextAttemptAt: number }>();
+
     const intervalId = setInterval(() => {
-      gatewayEntriesRef.current
-        .filter(({ gw }) => gw.ipAddress.trim() !== '' && !gw.isConnected && !gw.isConnecting)
-        .forEach(({ trId, gw }) => {
-          dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port }));
-        });
+      const now = Date.now();
+      for (const { trId, gw } of gatewayEntriesRef.current) {
+        if (gw.isConnected || gw.ipAddress.trim() === '') {
+          backoff.delete(gw.id);
+          continue;
+        }
+        if (gw.isConnecting || gw.autoReconnect === false) continue;
+
+        // First retry right away (e.g. the gateway server just restarted), then back off.
+        const entry = backoff.get(gw.id) ?? { attempts: 0, nextAttemptAt: now };
+        if (!backoff.has(gw.id)) backoff.set(gw.id, entry);
+        if (now < entry.nextAttemptAt) continue;
+
+        entry.attempts += 1;
+        entry.nextAttemptAt = now + Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** entry.attempts);
+        dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port }));
+      }
     }, RECONNECT_CHECK_MS);
     return () => clearInterval(intervalId);
   }, [dispatch]);
@@ -209,6 +229,12 @@ export const TmsAppLayout = () => {
           if (!gw.isConnected) continue;
           for (const device of gw.subDevices) {
             if (!device.enabled) continue;
+            // Never stack a new read on top of one still in flight: the
+            // gateway serializes reads per connection, so with several
+            // devices a slow/offline slave let the queue grow every tick
+            // until requests hit the HTTP timeout and the gateway got
+            // wrongly marked disconnected.
+            if (state.dashboard.readingsByTrId[`${tr.id}:${device.id}`]?.isReading) continue;
             const { startAddress, count } = device.registerConfig;
             const trId = tr.id;
             const deviceId = device.id;

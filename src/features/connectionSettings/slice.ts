@@ -214,6 +214,28 @@ function migrateMailThresholds(transformers: Transformer[]): Transformer[] {
   }));
 }
 
+// clientId is the gateway server's key for one TCP connection - two gateways
+// sharing a clientId share one socket, so connecting either one tears down
+// the other's connection and the two keep knocking each other offline.
+// Older saved state could end up with duplicates (the legacy migration
+// defaulted every TR to clientId 1) - give any repeat a fresh id.
+function ensureUniqueClientIds(transformers: Transformer[]): Transformer[] {
+  const seen = new Set<number>();
+  let next = Math.max(0, ...transformers.flatMap((tr) => tr.gateways.map((gw) => gw.clientId))) + 1;
+  return transformers.map((tr) => ({
+    ...tr,
+    gateways: tr.gateways.map((gw) => {
+      if (!seen.has(gw.clientId)) {
+        seen.add(gw.clientId);
+        return gw;
+      }
+      const clientId = next++;
+      seen.add(clientId);
+      return { ...gw, clientId };
+    }),
+  }));
+}
+
 function loadPersistedState(): PersistedState | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -226,13 +248,16 @@ function loadPersistedState(): PersistedState | null {
       readingsPushIntervalSeconds: number;
     }>;
     if (!Array.isArray(parsed.transformers) || parsed.transformers.length === 0) return null;
-    const transformers = migrateMailThresholds(
-      migrateIrtccOffsets(migrateSubDevices(resetLiveConnectionFields(migrateToGateways(parsed.transformers))))
+    const transformers = ensureUniqueClientIds(
+      migrateMailThresholds(
+        migrateIrtccOffsets(migrateSubDevices(resetLiveConnectionFields(migrateToGateways(parsed.transformers))))
+      )
     );
+    const maxClientId = Math.max(0, ...transformers.flatMap((tr) => tr.gateways.map((gw) => gw.clientId)));
     return {
       transformers,
       selectedTrId: typeof parsed.selectedTrId === 'string' ? parsed.selectedTrId : transformers[0].id,
-      nextClientId: typeof parsed.nextClientId === 'number' ? parsed.nextClientId : transformers.length + 1,
+      nextClientId: Math.max(typeof parsed.nextClientId === 'number' ? parsed.nextClientId : 0, maxClientId + 1),
       readingsPushIntervalSeconds:
         typeof parsed.readingsPushIntervalSeconds === 'number' &&
         parsed.readingsPushIntervalSeconds >= MIN_READINGS_PUSH_INTERVAL_SECONDS
@@ -461,6 +486,7 @@ const connectionSettingsSlice = createSlice({
       if (gw) {
         gw.ipAddress = action.payload.ipAddress;
         gw.port = action.payload.port;
+        gw.autoReconnect = false;
       }
     },
     clearGatewayError: (state, action: PayloadAction<{ trId: string; gatewayId: string }>) => {
@@ -555,6 +581,7 @@ const connectionSettingsSlice = createSlice({
       .addCase(connectGatewayAsync.pending, (state, action) => {
         const gw = findGateway(state, action.meta.arg.trId, action.meta.arg.gatewayId);
         if (gw) {
+          gw.autoReconnect = true;
           gw.isConnecting = true;
           gw.status = 'connecting';
           gw.errorMessage = null;
@@ -580,6 +607,10 @@ const connectionSettingsSlice = createSlice({
           gw.isConnected = false;
           gw.errorMessage = payload?.message ?? 'Connection failed';
         }
+      })
+      .addCase(disconnectGatewayAsync.pending, (state, action) => {
+        const gw = findGateway(state, action.meta.arg.trId, action.meta.arg.gatewayId);
+        if (gw) gw.autoReconnect = false;
       })
       .addCase(disconnectGatewayAsync.fulfilled, (state, action) => {
         const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);

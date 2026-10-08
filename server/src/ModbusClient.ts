@@ -23,9 +23,19 @@ type ErrorOccurredListener = (event: ErrorOccurredEvent) => void;
 
 // Constants mirror ModbusClient.vb
 const CONNECT_TIMEOUT_MS = 3000;
-const READ_TIMEOUT_MS = 1000;
+// Longer than ModbusClient.vb's 1000ms: most of these slaves sit behind a
+// TCP->RS485 gateway, where one request's round trip over the serial bus can
+// legitimately take several hundred ms. A too-tight timeout here turned
+// ordinary bus latency into "timed out" errors.
+const READ_TIMEOUT_MS = 2000;
 const WRITE_TIMEOUT_MS = 1000;
 const MAX_REGISTERS = 125; // Modbus spec limit per transaction
+// A single slow/offline slave must not drop the TCP connection that every
+// other slave on the same gateway shares - only give up on the socket after
+// this many timeouts in a row with no successful response in between (i.e.
+// the gateway itself has gone quiet, not just one device behind it).
+const MAX_CONSECUTIVE_TIMEOUTS = 3;
+const KEEPALIVE_DELAY_MS = 10_000;
 
 function toHex(buffer: Buffer): string {
   return buffer.toString('hex').match(/.{1,2}/g)?.join(' ') ?? '';
@@ -56,6 +66,12 @@ function getExceptionMessage(code: number): string {
   }
 }
 
+interface PendingTransaction {
+  resolve: (frame: Buffer) => void;
+  reject: (err: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
 export class ModbusClient {
   // -- Fields (mirrors ModbusClient.vb private fields) --
   private readonly _clientId: number;
@@ -64,20 +80,22 @@ export class ModbusClient {
   private _ipAddress = '';
   private _port = 0;
   private _transactionId = 0;
-  // Persistent receive buffer for the current socket - all incoming bytes land
-  // here (via a single 'data' listener attached in connect()) so readBytes can
-  // pull exactly the amount it needs regardless of how TCP packets are chunked.
-  private _recvBuffer: Buffer = Buffer.alloc(0);
-  private _recvWaiters: Array<() => void> = [];
+  // In-flight connect attempt, so concurrent connect requests for the same
+  // endpoint (auto-reconnect watcher + manual Connect + page reload) share
+  // one attempt instead of each tearing down the socket the previous one
+  // just opened.
+  private _connectPromise: Promise<void> | null = null;
+  // Responses are matched to requests by the MBAP transaction ID (see
+  // attachFrameParser) rather than "next N bytes on the stream", so a late
+  // response to a request that already timed out is simply discarded
+  // instead of being mistaken for the next request's answer.
+  private readonly _pending = new Map<number, PendingTransaction>();
+  private _consecutiveTimeouts = 0;
   // Serializes every read/write against this socket. Two sub-devices on the
-  // same TR (e.g. IRTCC + 2243) poll independently on their own timers but
-  // share one ModbusClient/TCP connection - without this, two requests could
-  // both write to the socket before either has read its response back, and
-  // since readBytes just pulls the next N bytes off one shared stream with
-  // no per-transaction routing, the two responses interleave and get sliced
-  // at the wrong boundaries (surfaces as "Unexpected byte count" or garbage
-  // register values). Chaining every request through this promise ensures
-  // a request's full write+read cycle finishes before the next one starts.
+  // same TR (e.g. IRTCC + 2243) poll independently but share one
+  // ModbusClient/TCP connection, and the RS485 bus behind the gateway can
+  // only carry one transaction at a time anyway - chaining every request
+  // through this promise keeps exactly one in flight per connection.
   private _requestQueue: Promise<unknown> = Promise.resolve();
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
@@ -139,14 +157,37 @@ export class ModbusClient {
 
   // -- Connection --
   // Mirrors: Public Sub Connect(ipAddress As String, port As Integer)
+  // Idempotent: connecting to the endpoint this client is already connected
+  // (or connecting) to reuses that socket instead of replacing it. Replacing
+  // a healthy socket on every redundant connect was what made one TR's
+  // reconnect knock the readings for it offline again.
   connect(ipAddress: string, port: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (this._isConnected) {
-        this.disconnect();
-      }
+    const sameEndpoint = this._ipAddress === ipAddress && this._port === port;
+    if (sameEndpoint && this.isConnected) {
+      console.log(`[Modbus:${this._clientId}] Connect request  -> ${ipAddress}:${port} (already connected, reusing)`);
+      return Promise.resolve();
+    }
+    if (sameEndpoint && this._connectPromise) {
+      return this._connectPromise;
+    }
 
-      this._ipAddress = ipAddress;
-      this._port = port;
+    if (this._socket) {
+      this.disconnect();
+    }
+
+    this._ipAddress = ipAddress;
+    this._port = port;
+    const attempt = this.openSocket(ipAddress, port);
+    this._connectPromise = attempt;
+    const clear = () => {
+      if (this._connectPromise === attempt) this._connectPromise = null;
+    };
+    attempt.then(clear, clear);
+    return attempt;
+  }
+
+  private openSocket(ipAddress: string, port: number): Promise<void> {
+    return new Promise((resolve, reject) => {
       console.log(`[Modbus:${this._clientId}] Connect request  -> ${ipAddress}:${port}`);
       this.raiseStatusChanged(`Connecting to ${ipAddress}:${port}...`, false);
 
@@ -155,91 +196,187 @@ export class ModbusClient {
       socket.setNoDelay(true);
       socket.setTimeout(CONNECT_TIMEOUT_MS);
 
+      // Every handler below checks it still belongs to the *current* socket -
+      // a replaced socket's late 'close'/'error' must never clobber the state
+      // of the connection that replaced it.
+      const isCurrent = () => this._socket === socket;
       let settled = false;
 
-      const cleanupListeners = () => {
-        socket.removeAllListeners('connect');
-        socket.removeAllListeners('timeout');
-        socket.removeAllListeners('error');
+      const fail = (message: string, err: Error) => {
+        if (settled) return;
+        settled = true;
+        console.log(`[Modbus:${this._clientId}] Connect response <- ${message}`);
+        socket.destroy();
+        if (isCurrent()) {
+          this._socket = null;
+          this._isConnected = false;
+          this.raiseStatusChanged('Disconnected', false);
+          this.raiseErrorOccurred(`Connect: ${message}`);
+        }
+        reject(err);
       };
 
       socket.once('connect', () => {
         if (settled) return;
         settled = true;
-        cleanupListeners();
-        socket.setTimeout(0); // disable connect timeout; reads/writes set their own below
+        socket.setTimeout(0); // disable connect timeout; transactions set their own
+        socket.setKeepAlive(true, KEEPALIVE_DELAY_MS);
+        if (!isCurrent()) {
+          socket.destroy();
+          reject(new Error('Connect: superseded by a newer connection'));
+          return;
+        }
         this._isConnected = true;
-        this._recvBuffer = Buffer.alloc(0);
-        socket.on('data', (data: Buffer) => {
-          this._recvBuffer = Buffer.concat([this._recvBuffer, data]);
-          const waiters = this._recvWaiters;
-          this._recvWaiters = [];
-          waiters.forEach((wake) => wake());
-        });
+        this._consecutiveTimeouts = 0;
+        this.attachFrameParser(socket);
         console.log(`[Modbus:${this._clientId}] Connect response <- connected to ${ipAddress}:${port}`);
         this.raiseStatusChanged(`Connected to ${ipAddress}:${port}`, true);
         resolve();
       });
 
-      socket.once('timeout', () => {
-        if (settled) return;
-        settled = true;
-        cleanupListeners();
+      socket.on('timeout', () => {
         const message = `Connection to ${ipAddress}:${port} timed out`;
-        console.log(`[Modbus:${this._clientId}] Connect response <- ${message}`);
-        socket.destroy();
-        this._socket = null;
-        this._isConnected = false;
-        this.raiseStatusChanged('Disconnected', false);
-        this.raiseErrorOccurred(`Connect: ${message}`);
-        reject(new Error(message));
+        fail(message, new Error(message));
       });
 
-      socket.once('error', (err: Error) => {
-        this._isConnected = false;
-        if (settled) {
-          // Error after a successful connect: mirror VB's comm-error handling.
-          console.log(`[Modbus:${this._clientId}] Comm error <- ${err.message}`);
-          this._socket = null;
-          this.raiseStatusChanged('Disconnected', false);
-          this.raiseErrorOccurred(`Comm error: ${err.message}`);
+      socket.on('error', (err: Error) => {
+        if (!settled) {
+          fail(err.message, err);
           return;
         }
-        settled = true;
-        cleanupListeners();
-        console.log(`[Modbus:${this._clientId}] Connect response <- ${err.message}`);
-        this._socket = null;
-        this.raiseStatusChanged('Disconnected', false);
-        this.raiseErrorOccurred(`Connect: ${err.message}`);
-        reject(err);
+        // Error after a successful connect: mirror VB's comm-error handling.
+        if (!isCurrent()) return;
+        console.log(`[Modbus:${this._clientId}] Comm error <- ${err.message}`);
+        this.dropConnection(`Comm error: ${err.message}`);
       });
 
       socket.once('close', () => {
-        if (!this._isConnected) return;
-        this._isConnected = false;
-        this._socket = null;
-        this.raiseStatusChanged('Disconnected', false);
+        if (!settled) {
+          fail('Connection closed', new Error('Connection closed'));
+          return;
+        }
+        if (!isCurrent()) return;
+        this.dropConnection('Connection closed by remote host');
       });
 
       socket.connect(port, ipAddress);
     });
   }
 
-  // Mirrors: Public Sub Disconnect()
-  disconnect(): void {
-    console.log(`[Modbus:${this._clientId}] Disconnect request -> ${this._ipAddress}:${this._port}`);
+  // Splits the incoming byte stream into Modbus TCP frames using the MBAP
+  // header's length field (bytes 4-5 = number of bytes that follow), then
+  // hands each frame to whichever pending transaction owns its ID.
+  private attachFrameParser(socket: Socket): void {
+    let buffer = Buffer.alloc(0);
+    socket.on('data', (data: Buffer) => {
+      if (this._socket !== socket) return;
+      buffer = Buffer.concat([buffer, data]);
+
+      while (buffer.length >= 7) {
+        const protocolId = buffer.readUInt16BE(2);
+        const length = buffer.readUInt16BE(4);
+        if (protocolId !== 0 || length < 2 || length > 254) {
+          // Not a valid MBAP header - framing is genuinely lost, the only
+          // recovery is a fresh socket.
+          console.log(`[Modbus:${this._clientId}] Invalid MBAP header, dropping connection [${toHex(buffer)}]`);
+          this.dropConnection('Comm error: invalid response framing');
+          return;
+        }
+        const frameLength = 6 + length;
+        if (buffer.length < frameLength) break;
+
+        const frame = Buffer.from(buffer.subarray(0, frameLength));
+        buffer = buffer.subarray(frameLength);
+        const tid = frame.readUInt16BE(0);
+        const pending = this._pending.get(tid);
+        if (!pending) {
+          console.log(`[Modbus:${this._clientId}] Discarding late/unknown response tid=${tid} [${toHex(frame)}]`);
+          continue;
+        }
+        this._pending.delete(tid);
+        clearTimeout(pending.timer);
+        pending.resolve(frame);
+      }
+    });
+  }
+
+  // The socket died underneath us (remote close, comm error, unrecoverable
+  // framing) - as opposed to disconnect(), which the user asked for.
+  private dropConnection(reason: string): void {
+    this.teardown(new Error(reason));
+    this.raiseStatusChanged('Disconnected', false);
+    this.raiseErrorOccurred(reason);
+  }
+
+  private teardown(reason: Error): void {
     this._isConnected = false;
+    const socket = this._socket;
+    this._socket = null;
     try {
-      this._socket?.destroy();
+      socket?.destroy();
     } catch {
       // ignore, mirrors VB's empty Catch in Disconnect()
     }
-    this._socket = null;
-    this._recvBuffer = Buffer.alloc(0);
-    const waiters = this._recvWaiters;
-    this._recvWaiters = [];
-    waiters.forEach((wake) => wake());
+    const pending = [...this._pending.values()];
+    this._pending.clear();
+    pending.forEach((p) => {
+      clearTimeout(p.timer);
+      p.reject(reason);
+    });
+  }
+
+  // Mirrors: Public Sub Disconnect()
+  disconnect(): void {
+    console.log(`[Modbus:${this._clientId}] Disconnect request -> ${this._ipAddress}:${this._port}`);
+    this._connectPromise = null;
+    this.teardown(new Error('Disconnected'));
     this.raiseStatusChanged('Disconnected', false);
+  }
+
+  // Sends one request frame and waits for the response frame carrying the
+  // same transaction ID. A timeout fails just this request; the connection
+  // is only dropped after MAX_CONSECUTIVE_TIMEOUTS in a row.
+  private transact(tid: number, request: Buffer, timeoutMs: number, label: string, slaveId: number): Promise<Buffer> {
+    const socket = this._socket;
+    if (!this.isConnected || !socket) {
+      this.raiseErrorOccurred(`${label}: Not connected`, slaveId);
+      return Promise.reject(new Error(`${label}: Not connected`));
+    }
+
+    return new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pending.delete(tid);
+        this._consecutiveTimeouts += 1;
+        const message = `${label}: Response timeout (slave ${slaveId})`;
+        console.log(
+          `[Modbus:${this._clientId}] tid=${tid} - ${message} (${this._consecutiveTimeouts}/${MAX_CONSECUTIVE_TIMEOUTS} consecutive)`
+        );
+        if (this._consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS) {
+          this.dropConnection('Comm error: gateway stopped responding');
+        }
+        this.raiseErrorOccurred(message, slaveId);
+        reject(new Error(message));
+      }, timeoutMs);
+
+      this._pending.set(tid, {
+        resolve: (frame) => {
+          this._consecutiveTimeouts = 0;
+          resolve(frame);
+        },
+        reject,
+        timer,
+      });
+
+      socket.write(request, (err) => {
+        if (!err) return;
+        const pending = this._pending.get(tid);
+        if (!pending) return;
+        this._pending.delete(tid);
+        clearTimeout(pending.timer);
+        this.raiseErrorOccurred(`${label}: ${err.message}`, slaveId);
+        reject(err);
+      });
+    });
   }
 
   // -- FC03: Read Holding Registers --
@@ -281,95 +418,56 @@ export class ModbusClient {
   }
 
   private async readRegistersChunkImpl(slaveId: number, startAddress: number, count: number): Promise<number[]> {
-    const socket = this._socket;
-    if (!socket) {
-      this.raiseErrorOccurred('Read: Not connected', slaveId);
-      throw new Error('Read: Not connected');
-    }
-
     const tid = this.nextTransactionId();
 
     // Build Modbus TCP ADU (7-byte MBAP header + PDU)
     // MBAP: Transaction ID (2), Protocol ID (2=0), Length (2), Unit ID (1)
     // PDU: FC (1), Start Addr Hi (1), Start Addr Lo (1), Qty Hi (1), Qty Lo (1)
     const request = Buffer.alloc(12);
-    request.writeUInt8((tid >> 8) & 0xff, 0); // Transaction ID High
-    request.writeUInt8(tid & 0xff, 1); // Transaction ID Low
-    request.writeUInt8(0, 2); // Protocol ID High (always 0)
-    request.writeUInt8(0, 3); // Protocol ID Low (always 0)
-    request.writeUInt8(0, 4); // Length High
-    request.writeUInt8(6, 5); // Length Low (6 bytes follow)
+    request.writeUInt16BE(tid, 0); // Transaction ID
+    request.writeUInt16BE(0, 2); // Protocol ID (always 0)
+    request.writeUInt16BE(6, 4); // Length (6 bytes follow)
     request.writeUInt8(slaveId, 6); // Unit ID
     request.writeUInt8(0x03, 7); // Function Code 03
-    request.writeUInt8((startAddress >> 8) & 0xff, 8); // Start Address High
-    request.writeUInt8(startAddress & 0xff, 9); // Start Address Low
-    request.writeUInt8((count >> 8) & 0xff, 10); // Quantity High
-    request.writeUInt8(count & 0xff, 11); // Quantity Low
+    request.writeUInt16BE(startAddress, 8); // Start Address
+    request.writeUInt16BE(count, 10); // Quantity
 
     console.log(
       `[Modbus:${this._clientId}] FC03 request  tid=${tid} slave=${slaveId} start=${startAddress} qty=${count} bytes=[${toHex(request)}]`
     );
 
-    await this.writeToSocket(socket, request);
-
-    // Read response header (9 bytes: 6 MBAP + FC + byte count)
-    const header = await this.readBytes(socket, 9, READ_TIMEOUT_MS);
-    if (header.length !== 9) {
-      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - incomplete header [${toHex(header)}]`);
-      // A short/timed-out read leaves the byte stream permanently
-      // desynced (Modbus TCP has no resync marker) - every future
-      // request on this socket would also fail. Tear the connection down
-      // so isConnected goes false and the frontend's poll loop can detect
-      // it and reconnect, instead of retrying forever against a wedged
-      // socket.
-      this.disconnect();
-      this.raiseErrorOccurred('Read: Incomplete response header', slaveId);
-      throw new Error('Read: Incomplete response header');
-    }
+    const frame = await this.transact(tid, request, READ_TIMEOUT_MS, 'Read', slaveId);
 
     // Check for exception response
-    if ((header[7] & 0x80) === 0x80) {
-      const message = `FC03 Exception: ${getExceptionMessage(header[8])}`;
-      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(header)}]`);
+    if ((frame[7] & 0x80) === 0x80) {
+      const message = `FC03 Exception: ${getExceptionMessage(frame[8])}`;
+      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(frame)}]`);
       this.raiseErrorOccurred(message, slaveId);
       throw new Error(message);
     }
-
-    const byteCount = header[8];
 
     // Guard against a slave returning a byteCount that doesn't match what we
     // asked for (malformed/non-conformant response) - trusting the requested
-    // `count` here (as ModbusClient.vb does) would read past the end of
-    // dataBytes and silently produce corrupted/undefined register values.
-    if (byteCount !== count * 2) {
+    // `count` here (as ModbusClient.vb does) would silently produce
+    // corrupted/undefined register values. The frame was already delimited
+    // by its MBAP length, so the stream itself is still in sync - only this
+    // request fails, the connection stays up.
+    const byteCount = frame[8];
+    const dataBytes = frame.subarray(9);
+    if (byteCount !== count * 2 || dataBytes.length !== byteCount) {
       const message = `Read: Unexpected byte count ${byteCount} for ${count} register(s)`;
-      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(header)}]`);
-      // Same reasoning as the incomplete-header case above: a malformed
-      // byteCount means the rest of the stream can't be trusted either -
-      // drop the connection rather than leaving a wedged socket behind.
-      this.disconnect();
+      console.log(`[Modbus:${this._clientId}] FC03 response tid=${tid} - ${message} [${toHex(frame)}]`);
       this.raiseErrorOccurred(message, slaveId);
       throw new Error(message);
     }
 
-    const dataBytes = await this.readBytes(socket, byteCount, READ_TIMEOUT_MS);
-    if (dataBytes.length !== byteCount) {
-      console.log(
-        `[Modbus:${this._clientId}] FC03 response tid=${tid} - incomplete data, got ${dataBytes.length}/${byteCount} bytes [${toHex(dataBytes)}]`
-      );
-      this.disconnect();
-      this.raiseErrorOccurred('Read: Incomplete data response', slaveId);
-      throw new Error('Read: Incomplete data response');
-    }
-
-    const registerCount = Math.floor(dataBytes.length / 2);
     const registers: number[] = [];
-    for (let i = 0; i < registerCount; i++) {
-      registers.push((dataBytes[i * 2] << 8) | dataBytes[i * 2 + 1]);
+    for (let i = 0; i < count; i++) {
+      registers.push(dataBytes.readUInt16BE(i * 2));
     }
 
     console.log(
-      `[Modbus:${this._clientId}] FC03 response tid=${tid} slave=${slaveId} bytes=[${toHex(header)} ${toHex(dataBytes)}] registers=[${registers.join(', ')}]`
+      `[Modbus:${this._clientId}] FC03 response tid=${tid} slave=${slaveId} bytes=[${toHex(frame)}] registers=[${registers.join(', ')}]`
     );
 
     return registers;
@@ -382,110 +480,38 @@ export class ModbusClient {
   }
 
   private async writeSingleRegisterImpl(slaveId: number, address: number, value: number): Promise<void> {
-    const socket = this._socket;
-    if (!this.isConnected || !socket) {
-      this.raiseErrorOccurred('Write: Not connected', slaveId);
-      throw new Error('Write: Not connected');
-    }
-
     const tid = this.nextTransactionId();
 
     // MBAP(6) + Unit(1) + FC(1) + Address(2) + Value(2) = 12 bytes
     const request = Buffer.alloc(12);
-    request.writeUInt8((tid >> 8) & 0xff, 0);
-    request.writeUInt8(tid & 0xff, 1);
-    request.writeUInt8(0, 2);
-    request.writeUInt8(0, 3);
-    request.writeUInt8(0, 4);
-    request.writeUInt8(6, 5);
+    request.writeUInt16BE(tid, 0);
+    request.writeUInt16BE(0, 2);
+    request.writeUInt16BE(6, 4);
     request.writeUInt8(slaveId, 6);
     request.writeUInt8(0x06, 7); // Function Code 06
-    request.writeUInt8((address >> 8) & 0xff, 8);
-    request.writeUInt8(address & 0xff, 9);
-    request.writeUInt8((value >> 8) & 0xff, 10);
-    request.writeUInt8(value & 0xff, 11);
+    request.writeUInt16BE(address, 8);
+    request.writeUInt16BE(value, 10);
 
     console.log(
       `[Modbus:${this._clientId}] FC06 request  tid=${tid} slave=${slaveId} address=${address} value=${value} bytes=[${toHex(request)}]`
     );
 
-    await this.writeToSocket(socket, request);
+    const frame = await this.transact(tid, request, WRITE_TIMEOUT_MS, 'Write', slaveId);
 
-    const response = await this.readBytes(socket, 12, READ_TIMEOUT_MS);
-    if (response.length < 12) {
-      console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - incomplete response [${toHex(response)}]`);
-      this.disconnect();
-      this.raiseErrorOccurred('WriteSingle: Incomplete response', slaveId);
-      throw new Error('WriteSingle: Incomplete response');
-    }
-
-    if ((response[7] & 0x80) === 0x80) {
-      const message = `Write FC06 Exception: ${getExceptionMessage(response[8])}`;
-      console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - ${message} [${toHex(response)}]`);
+    if ((frame[7] & 0x80) === 0x80) {
+      const message = `Write FC06 Exception: ${getExceptionMessage(frame[8])}`;
+      console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - ${message} [${toHex(frame)}]`);
       this.raiseErrorOccurred(message, slaveId);
       throw new Error(message);
     }
 
-    console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - confirmed [${toHex(response)}]`);
-  }
+    if (frame.length < 12) {
+      console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - incomplete response [${toHex(frame)}]`);
+      this.raiseErrorOccurred('WriteSingle: Incomplete response', slaveId);
+      throw new Error('WriteSingle: Incomplete response');
+    }
 
-  private writeToSocket(socket: Socket, data: Buffer): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Write timed out')), WRITE_TIMEOUT_MS);
-      socket.write(data, (err) => {
-        clearTimeout(timer);
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-
-  // Mirrors ModbusClient.vb's ReadBytes: accumulates until `count` bytes arrive or times out.
-  // Pulls from the persistent per-socket receive buffer (fed by the single 'data'
-  // listener attached in connect()) so bytes from one TCP packet that satisfy more
-  // than the current request (e.g. header + data arriving together) aren't dropped.
-  private readBytes(socket: Socket, count: number, timeoutMs: number): Promise<Buffer> {
-    if (count === 0) return Promise.resolve(Buffer.alloc(0));
-
-    return new Promise((resolve) => {
-      const deadline = Date.now() + timeoutMs;
-
-      const tryConsume = (): boolean => {
-        if (this._recvBuffer.length >= count) {
-          const result = this._recvBuffer.subarray(0, count);
-          this._recvBuffer = this._recvBuffer.subarray(count);
-          resolve(Buffer.from(result));
-          return true;
-        }
-        return false;
-      };
-
-      if (tryConsume()) return;
-
-      const wake = () => {
-        if (tryConsume()) {
-          clearTimeout(timer);
-          return;
-        }
-        if (socket.destroyed) {
-          clearTimeout(timer);
-          resolve(Buffer.from(this._recvBuffer));
-          this._recvBuffer = Buffer.alloc(0);
-          return;
-        }
-        this._recvWaiters.push(wake);
-      };
-
-      const timer = setTimeout(() => {
-        this._recvWaiters = this._recvWaiters.filter((w) => w !== wake);
-        const available = Math.min(count, this._recvBuffer.length);
-        const result = this._recvBuffer.subarray(0, available);
-        this._recvBuffer = this._recvBuffer.subarray(available);
-        resolve(Buffer.from(result));
-      }, Math.max(0, deadline - Date.now()));
-
-      this._recvWaiters.push(wake);
-    });
+    console.log(`[Modbus:${this._clientId}] FC06 response tid=${tid} - confirmed [${toHex(frame)}]`);
   }
 
   static get readTimeoutMs(): number {

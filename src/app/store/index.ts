@@ -9,6 +9,7 @@ import auditLogReducer from '../../features/auditLog/slice';
 import toastReducer from '../../features/toast/slice';
 import notificationsReducer from '../../features/notifications/slice';
 import dataLogReducer from '../../features/dataLog/slice';
+import monthlyReportReducer from '../../features/monthlyReport/slice';
 import { toastMiddleware } from './toastMiddleware';
 import type { Dependencies } from '../dependencies';
 
@@ -30,6 +31,7 @@ export function createStore(config: StoreConfig) {
       toast: toastReducer,
       notifications: notificationsReducer,
       dataLog: dataLogReducer,
+      monthlyReport: monthlyReportReducer,
     },
     middleware: (getDefaultMiddleware) =>
       getDefaultMiddleware({

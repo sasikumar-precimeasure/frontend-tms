@@ -21,8 +21,31 @@ const GATEWAY_BASE_URL = import.meta.env.VITE_MODBUS_GATEWAY_URL || 'http://loca
 // on to a visible error state instead.
 const GATEWAY_REQUEST_TIMEOUT_MS = 8000;
 
+// Identifies this browser tab to the gateway server, which namespaces every
+// clientId by it - clientIds are only unique within one tab's settings, so
+// without this a second tab (or a stale one holding older settings) using
+// the same clientId for a different IP/port kept stealing this tab's
+// connection. sessionStorage keeps the id stable across reloads of the same
+// tab, so a reload reuses its connections instead of orphaning them.
+function getGatewayInstanceId(): string {
+  const KEY = 'tms-gateway-instance-id';
+  try {
+    const existing = window.sessionStorage.getItem(KEY);
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    window.sessionStorage.setItem(KEY, created);
+    return created;
+  } catch {
+    return crypto.randomUUID();
+  }
+}
+
 export function createModbusDependencies(): ModbusDependencies {
-  const gatewayClient = axios.create({ baseURL: GATEWAY_BASE_URL, timeout: GATEWAY_REQUEST_TIMEOUT_MS });
+  const gatewayClient = axios.create({
+    baseURL: GATEWAY_BASE_URL,
+    timeout: GATEWAY_REQUEST_TIMEOUT_MS,
+    headers: { 'X-Tms-Instance': getGatewayInstanceId() },
+  });
 
   // Log every request/response to the Modbus gateway in the browser console -
   // separate from the gateway's own terminal logs, which are only visible in

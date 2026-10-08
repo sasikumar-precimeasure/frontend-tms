@@ -8,7 +8,8 @@ import { DataSyncSettingsCard } from '../components/DataSyncSettingsCard';
 import { RegisterMapCard } from '../components/RegisterMapCard';
 import { AvrSettingsCard } from '../components/AvrSettingsCard';
 import { MailConfigurationCard } from '../components/MailConfigurationCard';
-import { selectTr, addTransformer, removeTransformer, renameTransformer, addGateway } from '../slice';
+import { MonthlyReportCard } from '../components/MonthlyReportCard';
+import { selectTr, addTransformer, removeTransformer, renameTransformer, addGateway, disconnectGatewayAsync } from '../slice';
 
 const SettingsPage = () => {
   const dispatch = useAppDispatch();
@@ -78,7 +79,13 @@ const SettingsPage = () => {
                 </div>
 
                 <button
-                  onClick={() => dispatch(removeTransformer({ trId: selectedTr.id }))}
+                  onClick={() => {
+                    // Release each gateway's server connection, not just the UI entry.
+                    selectedTr.gateways.forEach((gw) =>
+                      dispatch(disconnectGatewayAsync({ trId: selectedTr.id, gatewayId: gw.id, clientId: gw.clientId }))
+                    );
+                    dispatch(removeTransformer({ trId: selectedTr.id }));
+                  }}
                   className="text-xs text-surface-400 hover:text-status-critical font-medium"
                 >
                   Remove this transformer
@@ -96,7 +103,10 @@ const SettingsPage = () => {
           <h2 className="text-sm font-semibold text-surface-700">{section}</h2>
 
           {section === 'Mail Configuration' ? (
-            <MailConfigurationCard />
+            <div className="space-y-4">
+              <MailConfigurationCard />
+              <MonthlyReportCard />
+            </div>
           ) : selectedTr ? (
             section === 'AVR Settings' ? (
               (() => {

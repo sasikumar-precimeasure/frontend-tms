@@ -116,7 +116,11 @@ export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCa
         </button>
 
         <button
-          onClick={() => dispatch(removeGateway({ trId, gatewayId: gateway.id }))}
+          onClick={() => {
+            // Release the gateway server's connection too, not just the UI entry.
+            dispatch(disconnectGatewayAsync({ trId, gatewayId: gateway.id, clientId: gateway.clientId }));
+            dispatch(removeGateway({ trId, gatewayId: gateway.id }));
+          }}
           className="ml-auto text-xs text-surface-400 hover:text-status-critical font-medium"
         >
           Remove gateway
