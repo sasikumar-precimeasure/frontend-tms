@@ -70,6 +70,31 @@ export function DataSyncSettingsCard() {
         <span className="text-xs text-surface-400">Minimum {MIN_READINGS_PUSH_INTERVAL_SECONDS / 60} minute</span>
       </div>
       {error && <p className="px-4 pb-3 -mt-1 text-[11px] text-status-critical">{error}</p>}
+      <PushStatus />
+    </div>
+  );
+}
+
+// Whether the pushes are actually landing - a failing push otherwise only
+// shows up later as gaps in the Data Log / monthly report.
+function PushStatus() {
+  const { lastAttemptAt, lastSuccessAt, lastError, failuresInARow } = useAppSelector((state) => state.readingsPush);
+  const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString() : 'never');
+
+  if (!lastAttemptAt) {
+    return <p className="px-4 pb-3 text-xs text-surface-500">Last sync: waiting for the first push…</p>;
+  }
+  if (!lastError) {
+    return <p className="px-4 pb-3 text-xs text-status-good font-medium">Last sync: OK at {time(lastSuccessAt)}</p>;
+  }
+  return (
+    <div className="mx-4 mb-3 px-3 py-2 rounded-md bg-status-critical-soft text-status-critical text-xs">
+      <p className="font-semibold">
+        Last sync failed at {time(lastAttemptAt)}
+        {failuresInARow > 1 ? ` (${failuresInARow} times in a row)` : ''} - readings are not being saved to history.
+      </p>
+      <p className="mt-0.5">{lastError}</p>
+      <p className="mt-0.5 text-surface-500">Last successful sync: {time(lastSuccessAt)}</p>
     </div>
   );
 }

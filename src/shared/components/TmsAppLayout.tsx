@@ -22,6 +22,15 @@ import { readTransformerRegistersAsync } from '../../features/dashboard/slice';
 const ANNUNCIATION_WATCH_INTERVAL_MS = 1_000;
 const REGISTER_POLL_INTERVAL_MS = 1_000;
 
+// The backend stores numbers only. A sensor reading "open" (disconnected /
+// out of range - shown as "Open" on the dashboard) is stored as "no value"
+// rather than sent as the text 'open', which the backend rejects - and one
+// rejected value used to fail the whole batch, losing that minute's
+// readings for EVERY transformer.
+function withoutOpenSentinels<T extends object>(readings: T): T {
+  return Object.fromEntries(Object.entries(readings).map(([key, value]) => [key, value === 'open' ? null : value])) as T;
+}
+
 // Builds one POST /tms/api/readings/batch payload from the current Redux
 // state - every enabled device under every gateway, paired with its latest
 // decoded reading (if any poll has landed for it yet). Devices with no
@@ -53,7 +62,7 @@ function buildReadingsPushRequest(state: RootState): ReadingsPushRequest {
               slaveId: device.slaveId,
               deviceType: 'DEVICE_2243' as const,
               enabled: device.enabled,
-              device2243Reading: registers ? { ...readings, recordedAt: now } : null,
+              device2243Reading: registers ? { ...withoutOpenSentinels(readings), recordedAt: now } : null,
             };
           }
 
@@ -65,7 +74,7 @@ function buildReadingsPushRequest(state: RootState): ReadingsPushRequest {
             slaveId: device.slaveId,
             deviceType: 'IRTCC' as const,
             enabled: device.enabled,
-            irtccReading: registers ? { ...readings, recordedAt: now } : null,
+            irtccReading: registers ? { ...withoutOpenSentinels(readings), recordedAt: now } : null,
           };
         }),
     })),

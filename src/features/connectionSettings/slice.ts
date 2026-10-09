@@ -181,11 +181,18 @@ function migrateIrtccOffsets(transformers: Transformer[]): Transformer[] {
         const defaults = DEFAULT_REGISTER_CONFIG.offsets as unknown as Record<string, number>;
         const missingKeys = Object.keys(defaults).filter((key) => !(key in offsets));
         const needsCountBump = device.registerConfig.count < DEFAULT_REGISTER_CONFIG.count;
-        if (missingKeys.length === 0 && !needsCountBump) return device;
+        // The AVR status register used to default to 9 - the same position
+        // as OTI Temperature - so AVR status bits were decoded from the
+        // temperature. Move it to the correct default (8) wherever it still
+        // collides with OTI Temperature; a deliberately chosen value never
+        // collides, so this never overrides one.
+        const avrStatusCollides = offsets.avrStatusWord === offsets.otiTemperature;
+        if (missingKeys.length === 0 && !needsCountBump && !avrStatusCollides) return device;
         const mergedOffsets = { ...offsets };
         missingKeys.forEach((key) => {
           mergedOffsets[key] = defaults[key];
         });
+        if (avrStatusCollides) mergedOffsets.avrStatusWord = defaults.avrStatusWord;
         return {
           ...device,
           registerConfig: {

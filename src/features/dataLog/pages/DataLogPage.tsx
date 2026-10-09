@@ -72,6 +72,20 @@ export function DataLogPage() {
   const dispatch = useAppDispatch();
   const transformers = useAppSelector((state) => state.dataLog.transformers);
   const topologyLoaded = useAppSelector((state) => state.dataLog.topologyLoaded);
+  const configuredTransformers = useAppSelector((state) => state.connectionSettings.transformers);
+
+  // The backend keeps every transformer any browser has ever pushed, so
+  // earlier setups (or another browser's settings) leave same-named entries
+  // behind - e.g. four "TR1 7.5 MVA", only one of which still gets data.
+  // List the transformers configured in this browser first (in Settings
+  // order) and everything else separately as "old", so the default and the
+  // obvious choice are the ones actually receiving readings.
+  const { currentTransformers, oldTransformers } = useMemo(() => {
+    const backendById = new Map(transformers.map((tr) => [tr.id, tr]));
+    const current = configuredTransformers.flatMap((tr) => backendById.get(tr.id) ?? []);
+    const currentIds = new Set(current.map((tr) => tr.id));
+    return { currentTransformers: current, oldTransformers: transformers.filter((tr) => !currentIds.has(tr.id)) };
+  }, [transformers, configuredTransformers]);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedTrId, setSelectedTrId] = useState('');
@@ -103,8 +117,9 @@ export function DataLogPage() {
   // the screen isn't just an empty shell on first visit.
   const [autoSelected, setAutoSelected] = useState(false);
   if (topologyLoaded && !autoSelected) {
-    if (transformers.length > 0 && selectedTrId === '') {
-      setSelectedTrId(transformers[0].id);
+    const first = currentTransformers[0] ?? oldTransformers[0];
+    if (first && selectedTrId === '') {
+      setSelectedTrId(first.id);
     }
     setAutoSelected(true);
   }
@@ -295,11 +310,24 @@ export function DataLogPage() {
                 className="px-2.5 py-1.5 text-sm border border-surface-300 rounded-md bg-surface-0 min-w-[180px] focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
               >
                 <option value="">Select a transformer…</option>
-                {transformers.map((tr) => (
-                  <option key={tr.id} value={tr.id}>
-                    {tr.name}
-                  </option>
-                ))}
+                {currentTransformers.length > 0 && (
+                  <optgroup label="Configured in Settings">
+                    {currentTransformers.map((tr) => (
+                      <option key={tr.id} value={tr.id}>
+                        {tr.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {oldTransformers.length > 0 && (
+                  <optgroup label="Older setups (no longer in Settings)">
+                    {oldTransformers.map((tr) => (
+                      <option key={tr.id} value={tr.id}>
+                        {tr.name} (old)
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </div>
             <div>

@@ -16,17 +16,17 @@ const IRTCC_FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
   ptVoltage: 'PT Voltage',
   actualPtVoltage: 'Actual PT Voltage',
   operationMode: 'Operation Mode',
-  lvBreakerWord: 'LV Breaker — Status Word',
-  lvBreakerBit: 'LV Breaker — Bit',
-  hvBreakerWord: 'HV Breaker — Status Word',
-  hvBreakerBit: 'HV Breaker — Bit',
-  oltcWord: 'OLTC Local/Remote — Status Word',
-  oltcBit: 'OLTC Local/Remote — Bit',
+  lvBreakerWord: 'LV Breaker — Status Register',
+  lvBreakerBit: 'LV Breaker — Status Bit',
+  hvBreakerWord: 'HV Breaker — Status Register',
+  hvBreakerBit: 'HV Breaker — Status Bit',
+  oltcWord: 'OLTC Local/Remote — Status Register',
+  oltcBit: 'OLTC Local/Remote — Status Bit',
   ptFailRegister: 'PT Fail',
-  annAlarmWord1: 'Annunciation — Alarm Word 1',
-  annAlarmWord2: 'Annunciation — Alarm Word 2',
-  annAckWord1: 'Annunciation — Ack Word 1',
-  annAckWord2: 'Annunciation — Ack Word 2',
+  annAlarmWord1: 'Annunciation — Alarm Register 1',
+  annAlarmWord2: 'Annunciation — Alarm Register 2',
+  annAckWord1: 'Annunciation — Acknowledge Register 1',
+  annAckWord2: 'Annunciation — Acknowledge Register 2',
   annHooterRegister: 'Annunciation — Hooter',
   annMuteRegister: 'Annunciation — Mute Visible',
   annMuteWriteRegister: 'Annunciation — Mute Write Target',
@@ -35,7 +35,7 @@ const IRTCC_FIELD_LABELS: Record<keyof RegisterOffsetMap, string> = {
   tapLowerWriteRegister: 'AVR — Tap Lower',
   controlFailResetWriteRegister: 'AVR — Control Fail Reset',
   controlFailStatusRegister: 'AVR — Control Fail Status',
-  avrStatusWord: 'AVR — Status Word',
+  avrStatusWord: 'AVR — Status Register',
   avrPtRatio: 'AVR Settings — PT Ratio',
   avrSetVoltage: 'AVR Settings — Set Voltage',
   avrRaiseRelayVoltage: 'AVR Settings — Raise Relay Voltage',
@@ -82,6 +82,11 @@ interface RegisterMapCardProps {
   device: SubDevice;
 }
 
+// The actual register address a position points to - what a device manual lists.
+function RegisterAddress({ address }: { address: number }) {
+  return <span className="w-28 text-[11px] text-surface-400 font-mono">= register {address}</span>;
+}
+
 export const RegisterMapCard = ({ trId, gatewayId, device }: RegisterMapCardProps) => {
   const dispatch = useAppDispatch();
   const { startAddress, count } = device.registerConfig;
@@ -98,13 +103,16 @@ export const RegisterMapCard = ({ trId, gatewayId, device }: RegisterMapCardProp
       <div className="px-4 py-3 bg-surface-50 border-b border-surface-200">
         <p className="text-sm font-semibold text-surface-800">Register Map</p>
         <p className="text-xs text-surface-500 mt-0.5">
-          FC03 read parameters for {device.name} — per-device, since device layouts can differ.
+          Which registers to read from {device.name}, and where each value sits in them (per device, since device
+          layouts can differ).
         </p>
       </div>
 
       <div className="px-4 py-3 flex flex-wrap items-center gap-4 border-b border-surface-100">
         <div className="flex items-center gap-1.5">
-          <label className="text-xs font-medium text-surface-500">Start Address</label>
+          <label className="text-xs font-medium text-surface-500" title="Address of the first register to read">
+            First register address
+          </label>
           <input
             type="number"
             value={startAddress}
@@ -123,7 +131,9 @@ export const RegisterMapCard = ({ trId, gatewayId, device }: RegisterMapCardProp
           />
         </div>
         <div className="flex items-center gap-1.5">
-          <label className="text-xs font-medium text-surface-500">Count</label>
+          <label className="text-xs font-medium text-surface-500" title="How many registers to read, starting at the first address">
+            Registers to read
+          </label>
           <input
             type="number"
             value={count}
@@ -143,13 +153,26 @@ export const RegisterMapCard = ({ trId, gatewayId, device }: RegisterMapCardProp
         </div>
       </div>
 
+      <p className="px-4 pt-2 text-[11px] text-surface-500">
+        <span className="font-semibold text-surface-600">Position</span> = where the value is within the registers read:
+        position 0 is the first register address ({startAddress}), position 1 the next, and so on. The register address it
+        points to is shown on the right.
+        {!is2243 && (
+          <>
+            {' '}
+            <span className="font-semibold text-surface-600">Bit</span> (0–15) = which bit of that register holds an on/off
+            status.
+          </>
+        )}
+      </p>
+
       <div className="px-4 py-2">
         {is2243 && offsets2243
           ? DEVICE_2243_FIELD_ORDER.map((field) => (
               <div key={field} className="flex items-center justify-between gap-3 py-1.5">
                 <span className="text-sm text-surface-600">{DEVICE_2243_FIELD_LABELS[field]}</span>
                 <div className="flex items-center gap-1.5">
-                  <label className="text-xs font-medium text-surface-500">Offset</label>
+                  <label className="text-xs font-medium text-surface-500">Position</label>
                   <input
                     type="number"
                     value={offsets2243[field]}
@@ -166,6 +189,7 @@ export const RegisterMapCard = ({ trId, gatewayId, device }: RegisterMapCardProp
                     }
                     className="w-16 px-2 py-1 text-sm font-mono border border-surface-300 rounded-md"
                   />
+                  <RegisterAddress address={startAddress + offsets2243[field]} />
                 </div>
               </div>
             ))
@@ -176,7 +200,7 @@ export const RegisterMapCard = ({ trId, gatewayId, device }: RegisterMapCardProp
                 <div key={field} className="flex items-center justify-between gap-3 py-1.5">
                   <span className="text-sm text-surface-600">{IRTCC_FIELD_LABELS[field]}</span>
                   <div className="flex items-center gap-1.5">
-                    <label className="text-xs font-medium text-surface-500">{isBit ? 'Bit' : 'Offset'}</label>
+                    <label className="text-xs font-medium text-surface-500">{isBit ? 'Bit' : 'Position'}</label>
                     <input
                       type="number"
                       min={isBit ? 0 : undefined}
@@ -195,6 +219,11 @@ export const RegisterMapCard = ({ trId, gatewayId, device }: RegisterMapCardProp
                       }
                       className="w-16 px-2 py-1 text-sm font-mono border border-surface-300 rounded-md"
                     />
+                    {isBit ? (
+                      <span className="w-28 text-[11px] text-surface-400">of the register above</span>
+                    ) : (
+                      <RegisterAddress address={startAddress + irtccOffsets[field]} />
+                    )}
                   </div>
                 </div>
               );

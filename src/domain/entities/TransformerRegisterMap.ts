@@ -203,7 +203,7 @@ export const DEFAULT_REGISTER_CONFIG: TransformerRegisterConfig = {
     tapLowerWriteRegister: 45,
     controlFailResetWriteRegister: 65,
     controlFailStatusRegister: 66,
-    avrStatusWord: 9,
+    avrStatusWord: 8,
     // 40020, 40047-40059 relative to startAddress 40001 -> offsets 19, 46-58.
     avrPtRatio: 19,
     avrSetVoltage: 46,
