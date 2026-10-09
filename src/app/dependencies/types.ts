@@ -5,8 +5,6 @@ import type { LoginUseCase } from '../../domain/usecases/LoginUseCase';
 import type { ForgotPasswordUseCase } from '../../domain/usecases/ForgotPasswordUseCase';
 import type { SetPasswordUseCase } from '../../domain/usecases/SetPasswordUseCase';
 import type { ModbusRepository } from '../../domain/repositories/ModbusRepository';
-import type { ConnectModbusUseCase } from '../../domain/usecases/ConnectModbusUseCase';
-import type { DisconnectModbusUseCase } from '../../domain/usecases/DisconnectModbusUseCase';
 import type { ReadHoldingRegistersUseCase } from '../../domain/usecases/ReadHoldingRegistersUseCase';
 import type { WriteSingleRegisterUseCase } from '../../domain/usecases/WriteSingleRegisterUseCase';
 
@@ -34,8 +32,6 @@ export interface AuthDependencies {
  */
 export interface ModbusDependencies {
   modbusRepository: ModbusRepository;
-  connectModbusUseCase: ConnectModbusUseCase;
-  disconnectModbusUseCase: DisconnectModbusUseCase;
   readHoldingRegistersUseCase: ReadHoldingRegistersUseCase;
   writeSingleRegisterUseCase: WriteSingleRegisterUseCase;
 }

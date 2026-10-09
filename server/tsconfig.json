@@ -4,12 +4,16 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "..",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "../src/domain/entities/TransformerRegisterMap.ts",
+    "../src/domain/entities/Device2243RegisterMap.ts"
+  ]
 }

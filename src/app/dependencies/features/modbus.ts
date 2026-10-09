@@ -1,10 +1,8 @@
 import axios from 'axios';
 import { ModbusRepositoryImpl } from '../../../infrastructure/repositories/ModbusRepositoryImpl';
-import { ConnectModbusUseCase } from '../../../domain/usecases/ConnectModbusUseCase';
-import { DisconnectModbusUseCase } from '../../../domain/usecases/DisconnectModbusUseCase';
 import { ReadHoldingRegistersUseCase } from '../../../domain/usecases/ReadHoldingRegistersUseCase';
 import { WriteSingleRegisterUseCase } from '../../../domain/usecases/WriteSingleRegisterUseCase';
-import type { ModbusDependencies } from '../types';
+import type { InfrastructureDependencies, ModbusDependencies } from '../types';
 
 // Local gateway service (server/) that owns the real TCP socket to the hardware -
 // separate from the main authenticated apiClient, since it's a different host/service.
@@ -21,36 +19,25 @@ const GATEWAY_BASE_URL = import.meta.env.VITE_MODBUS_GATEWAY_URL || 'http://loca
 // on to a visible error state instead.
 const GATEWAY_REQUEST_TIMEOUT_MS = 8000;
 
-// Identifies this browser tab to the gateway server, which namespaces every
-// clientId by it - clientIds are only unique within one tab's settings, so
-// without this a second tab (or a stale one holding older settings) using
-// the same clientId for a different IP/port kept stealing this tab's
-// connection. sessionStorage keeps the id stable across reloads of the same
-// tab, so a reload reuses its connections instead of orphaning them.
-function getGatewayInstanceId(): string {
-  const KEY = 'tms-gateway-instance-id';
-  try {
-    const existing = window.sessionStorage.getItem(KEY);
-    if (existing) return existing;
-    const created = crypto.randomUUID();
-    window.sessionStorage.setItem(KEY, created);
-    return created;
-  } catch {
-    return crypto.randomUUID();
-  }
-}
-
-export function createModbusDependencies(): ModbusDependencies {
-  const gatewayClient = axios.create({
-    baseURL: GATEWAY_BASE_URL,
-    timeout: GATEWAY_REQUEST_TIMEOUT_MS,
-    headers: { 'X-Tms-Instance': getGatewayInstanceId() },
-  });
+export function createModbusDependencies(infrastructure: InfrastructureDependencies): ModbusDependencies {
+  const gatewayClient = axios.create({ baseURL: GATEWAY_BASE_URL, timeout: GATEWAY_REQUEST_TIMEOUT_MS });
 
   // Log every request/response to the Modbus gateway in the browser console -
   // separate from the gateway's own terminal logs, which are only visible in
-  // the Node process running server/ (never in the browser).
+  // the Node process running server/ (never in the browser). The once-a-second
+  // /api/live poll is left out (it would drown everything else); its
+  // failures are still logged.
+  const isLivePoll = (url: string | undefined) => url === '/api/live';
+
+  // Settings changes and hardware commands need the logged-in user's token -
+  // the gateway service checks their write permission with the backend.
   gatewayClient.interceptors.request.use((config) => {
+    const token = infrastructure.storageRepository.getItem('token');
+    if (token) config.headers.Authorization = `Bearer ${token}`;
+    return config;
+  });
+  gatewayClient.interceptors.request.use((config) => {
+    if (isLivePoll(config.url)) return config;
     const url = `${config.baseURL ?? ''}${config.url ?? ''}`;
     console.log(
       `[Modbus] --> ${config.method?.toUpperCase()} ${url}`,
@@ -61,6 +48,7 @@ export function createModbusDependencies(): ModbusDependencies {
 
   gatewayClient.interceptors.response.use(
     (response) => {
+      if (isLivePoll(response.config.url)) return response;
       const url = `${response.config.baseURL ?? ''}${response.config.url ?? ''}`;
       console.log(
         `[Modbus] <-- ${response.config.method?.toUpperCase()} ${url} ${response.status}`,
@@ -68,8 +56,19 @@ export function createModbusDependencies(): ModbusDependencies {
       );
       return response;
     },
-    (error) => {
+    async (error) => {
       const config = error.config ?? {};
+      // Expired login: any backend call through the main API client renews
+      // the token (its own refresh-and-retry), then retry this once.
+      if (error.response?.status === 401 && !config._authRetried) {
+        config._authRetried = true;
+        try {
+          await infrastructure.apiClient.get('/tms/api/users/me');
+          return await gatewayClient.request(config);
+        } catch {
+          // fall through to the normal error below
+        }
+      }
       const url = `${config.baseURL ?? ''}${config.url ?? ''}`;
       console.log(
         `[Modbus] <-- ${config.method?.toUpperCase?.() ?? '?'} ${url} ${error.response?.status ?? 'ERROR'}`,
@@ -81,15 +80,11 @@ export function createModbusDependencies(): ModbusDependencies {
 
   const modbusRepository = new ModbusRepositoryImpl(gatewayClient);
 
-  const connectModbusUseCase = new ConnectModbusUseCase(modbusRepository);
-  const disconnectModbusUseCase = new DisconnectModbusUseCase(modbusRepository);
   const readHoldingRegistersUseCase = new ReadHoldingRegistersUseCase(modbusRepository);
   const writeSingleRegisterUseCase = new WriteSingleRegisterUseCase(modbusRepository);
 
   return {
     modbusRepository,
-    connectModbusUseCase,
-    disconnectModbusUseCase,
     readHoldingRegistersUseCase,
     writeSingleRegisterUseCase,
   };

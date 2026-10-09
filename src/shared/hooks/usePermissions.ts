@@ -29,3 +29,14 @@ export function useMenuPermissions(): Set<PermissionMenu> {
     permissions.filter((p) => p.read || p.write).map((p) => p.menu as PermissionMenu)
   );
 }
+
+// Whether a permission list grants WRITE on a menu - mirrors the backend's
+// PermissionGuard.requireWrite. Read-only users can open a screen (see
+// useHasMenuPermission) but must not be able to change anything on it.
+export function hasWritePermission(permissions: { menu: string; write: boolean }[], menu: PermissionMenu): boolean {
+  return permissions.some((p) => p.menu === menu && p.write);
+}
+
+export function useCanWrite(menu: PermissionMenu): boolean {
+  return useAppSelector((state) => hasWritePermission(state.auth.permissions, menu));
+}

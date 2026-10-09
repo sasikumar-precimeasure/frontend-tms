@@ -1,8 +1,7 @@
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { Gateway } from '../../../domain/entities/ConnectionSettings';
 import {
-  connectGatewayAsync,
-  disconnectGatewayAsync,
+  setGatewayAutoConnect,
   updateGatewayConnection,
   updateGatewayBusGroup,
   clearGatewayError,
@@ -47,22 +46,13 @@ export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCa
     : [];
   const knownBusNames = [...new Set(allGateways.map(({ gw }) => (gw.busGroup ?? '').trim()).filter(Boolean))];
 
+  // The gateway service does the connecting (and keeps the connection up
+  // with the browser minimized or closed) - this only switches it on/off.
   const handleConnectToggle = () => {
-    if (gateway.isConnected) {
-      dispatch(disconnectGatewayAsync({ trId, gatewayId: gateway.id, clientId: gateway.clientId }));
-    } else {
-      dispatch(
-        connectGatewayAsync({
-          trId,
-          gatewayId: gateway.id,
-          clientId: gateway.clientId,
-          ipAddress: gateway.ipAddress,
-          port: gateway.port,
-          busGroup: gateway.busGroup,
-        })
-      );
-    }
+    const turningOn = gateway.autoReconnect === false;
+    dispatch(setGatewayAutoConnect({ trId, gatewayId: gateway.id, autoConnect: turningOn }));
   };
+  const isOn = gateway.autoReconnect !== false;
 
   return (
     <div className="bg-surface-0 rounded-lg border border-surface-200 overflow-hidden card-hover">
@@ -141,22 +131,20 @@ export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCa
 
         <button
           onClick={handleConnectToggle}
-          disabled={gateway.isConnecting}
-          className={`px-3 py-1.5 text-xs font-semibold rounded-md transition disabled:opacity-50 ${
-            gateway.isConnected
-              ? 'bg-status-good-soft text-status-good hover:bg-status-good/10'
-              : 'bg-primary text-white hover:bg-primary-700'
+          title={isOn ? 'Click to disconnect - the gateway service stops polling this gateway' : undefined}
+          className={`px-3 py-1.5 text-xs font-semibold rounded-md transition ${
+            !isOn
+              ? 'bg-primary text-white hover:bg-primary-700'
+              : gateway.isConnected
+                ? 'bg-status-good-soft text-status-good hover:bg-status-good/10'
+                : 'bg-status-warn-soft text-status-warn hover:bg-status-warn/10'
           }`}
         >
-          {gateway.isConnecting ? 'Connecting…' : gateway.isConnected ? 'Connected' : 'Connect'}
+          {!isOn ? 'Connect' : gateway.isConnected ? 'Connected' : 'Connecting… (stop)'}
         </button>
 
         <button
-          onClick={() => {
-            // Release the gateway server's connection too, not just the UI entry.
-            dispatch(disconnectGatewayAsync({ trId, gatewayId: gateway.id, clientId: gateway.clientId }));
-            dispatch(removeGateway({ trId, gatewayId: gateway.id }));
-          }}
+          onClick={() => dispatch(removeGateway({ trId, gatewayId: gateway.id }))}
           className="ml-auto text-xs text-surface-400 hover:text-status-critical font-medium"
         >
           Remove gateway

@@ -96,9 +96,9 @@ function isTmsLauncher(command) {
 }
 
 // A TMS server itself: anything run from this project's folder, or the
-// production gateway (`node dist/server.js`, started from tms/server).
+// production gateway (`node dist/server/src/server.js`, started from tms/server).
 function isTmsProcess(command) {
-  return command.includes(projectDir) || /dist[\\/]server\.js/.test(command);
+  return command.includes(projectDir) || /dist[\\/](server[\\/]src[\\/])?server\.js/.test(command);
 }
 
 // Returns { ports: [{port,label,inUse,processes:[{pid,command}]}], strayWatchers: [{pid,command}] }.

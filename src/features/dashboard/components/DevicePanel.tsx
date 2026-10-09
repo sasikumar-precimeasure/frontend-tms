@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
+import { useCanWrite } from '../../../shared/hooks/usePermissions';
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
 import type { RegisterOffsetMap } from '../../../domain/entities/TransformerRegisterMap';
 import { mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
@@ -341,6 +342,9 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
   const readingKey = `${trId}:${device.id}`;
   const readState = useAppSelector((state) => state.dashboard.readingsByTrId[readingKey]);
   const writesByKey = useAppSelector((state) => state.dashboard.writesByKey);
+  // Commands to the device (AVR mode, tap, reset, setpoints) need write
+  // permission on Dashboard; read-only users still see every reading.
+  const canControl = useCanWrite('Dashboard');
   const { startAddress } = device.registerConfig;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const pendingDrawerTarget = useAppSelector((state) => state.notifications.pendingDrawerTarget);
@@ -509,16 +513,18 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
             {readState.errorMessage}
           </div>
         )}
-        <Device2243Panel
-          trId={trId}
-          clientId={clientId}
-          slaveId={device.slaveId}
-          deviceId={device.id}
-          startAddress={config2243.startAddress}
-          offsets={config2243.offsets}
-          readings={readings2243}
-          unavailable={hasReadError}
-        />
+        <fieldset disabled={!canControl} className="min-w-0">
+          <Device2243Panel
+            trId={trId}
+            clientId={clientId}
+            slaveId={device.slaveId}
+            deviceId={device.id}
+            startAddress={config2243.startAddress}
+            offsets={config2243.offsets}
+            readings={readings2243}
+            unavailable={hasReadError}
+          />
+        </fieldset>
       </div>
     );
   }
@@ -635,6 +641,7 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
 
       {/* AVR controls - each writes a real register via FC06, mirroring
           Btn_AvrAuto/Btn_TapRaise/Btn_TapLow/Btn_CfReset_Click */}
+      <fieldset disabled={!canControl} className="min-w-0" title={canControl ? undefined : 'View only - needs write permission on Dashboard'}>
       <AvrControls
         avrModeIsAuto={readings.avrModeIsAuto}
         controlFailActive={readings.controlFailActive}
@@ -647,6 +654,7 @@ export const DevicePanel = ({ trId, clientId, isConnected, device }: DevicePanel
         onTapLower={handleTapLower}
         onControlFailReset={handleControlFailReset}
       />
+      </fieldset>
 
       {/* Status - bit-decoded from the configured breaker/OLTC/PT-fail/AVR registers */}
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-3 animate-panel-enter stagger-4">

@@ -2,86 +2,15 @@ import { useEffect, useRef } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useTheme } from '../hooks/useTheme';
 import { useAppDispatch, useAppSelector, useAppStore } from '../../app/store/hooks';
-import type { RootState } from '../../app/store';
 import { logoutAsync } from '../../features/auth/slice';
 import { useMenuPermissions } from '../hooks/usePermissions';
 import type { PermissionMenu } from '../hooks/usePermissions';
-import { connectGatewayAsync } from '../../features/connectionSettings/slice';
 import type { TransformerRegisterConfig } from '../../domain/entities/TransformerRegisterMap';
 import { ANNUNCIATION_TILES, mapRegistersToReadings } from '../../domain/entities/TransformerRegisterMap';
-import type { Device2243RegisterConfig } from '../../domain/entities/Device2243RegisterMap';
-import { map2243RegistersToReadings } from '../../domain/entities/Device2243RegisterMap';
-import { pushReadingsBatchAsync } from '../../features/readingsPush/slice';
-import type {
-  ReadingsPushRequest,
-  ReadingsPushTransformerEntry,
-} from '../../features/readingsPush/slice';
 import { showNotification } from '../../features/notifications/slice';
-import { readTransformerRegistersAsync } from '../../features/dashboard/slice';
+import { useGatewayService } from '../../features/live/useGatewayService';
 
 const ANNUNCIATION_WATCH_INTERVAL_MS = 1_000;
-const REGISTER_POLL_INTERVAL_MS = 1_000;
-
-// The backend stores numbers only. A sensor reading "open" (disconnected /
-// out of range - shown as "Open" on the dashboard) is stored as "no value"
-// rather than sent as the text 'open', which the backend rejects - and one
-// rejected value used to fail the whole batch, losing that minute's
-// readings for EVERY transformer.
-function withoutOpenSentinels<T extends object>(readings: T): T {
-  return Object.fromEntries(Object.entries(readings).map(([key, value]) => [key, value === 'open' ? null : value])) as T;
-}
-
-// Builds one POST /tms/api/readings/batch payload from the current Redux
-// state - every enabled device under every gateway, paired with its latest
-// decoded reading (if any poll has landed for it yet). Devices with no
-// reading yet (e.g. gateway not connected) are still included so the
-// backend's topology stays in sync, just with a null reading.
-function buildReadingsPushRequest(state: RootState): ReadingsPushRequest {
-  const now = new Date().toISOString();
-  const transformers: ReadingsPushTransformerEntry[] = state.connectionSettings.transformers.map((tr) => ({
-    id: tr.id,
-    name: tr.name,
-    gateways: tr.gateways.map((gw) => ({
-      id: gw.id,
-      name: gw.name,
-      clientId: gw.clientId,
-      ipAddress: gw.ipAddress,
-      port: gw.port,
-      devices: gw.subDevices
-        .filter((device) => device.enabled)
-        .map((device) => {
-          const readingKey = `${tr.id}:${device.id}`;
-          const registers = state.dashboard.readingsByTrId[readingKey]?.registers ?? null;
-
-          if (device.deviceType === '2243') {
-            const config = device.registerConfig as Device2243RegisterConfig;
-            const readings = map2243RegistersToReadings(registers, config.offsets);
-            return {
-              id: device.id,
-              name: device.name,
-              slaveId: device.slaveId,
-              deviceType: 'DEVICE_2243' as const,
-              enabled: device.enabled,
-              device2243Reading: registers ? { ...withoutOpenSentinels(readings), recordedAt: now } : null,
-            };
-          }
-
-          const config = device.registerConfig as TransformerRegisterConfig;
-          const readings = mapRegistersToReadings(registers, config.offsets);
-          return {
-            id: device.id,
-            name: device.name,
-            slaveId: device.slaveId,
-            deviceType: 'IRTCC' as const,
-            enabled: device.enabled,
-            irtccReading: registers ? { ...withoutOpenSentinels(readings), recordedAt: now } : null,
-          };
-        }),
-    })),
-  }));
-
-  return { transformers };
-}
 
 // Each nav item's `menus` lists every permission menu that would unlock it -
 // Settings bundles three independently-permissioned sections (Connection
@@ -102,8 +31,6 @@ export const TmsAppLayout = () => {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const store = useAppStore();
-  const transformers = useAppSelector((state) => state.connectionSettings.transformers);
-  const readingsPushIntervalSeconds = useAppSelector((state) => state.connectionSettings.readingsPushIntervalSeconds);
   const currentUser = useAppSelector((state) => state.auth.user);
   const allowedMenus = useMenuPermissions();
   const visibleNavItems = NAV_ITEMS.filter((item) => item.menus.some((menu) => allowedMenus.has(menu)));
@@ -113,198 +40,11 @@ export const TmsAppLayout = () => {
     navigate('/login', { replace: true });
   };
 
-  // Flatten every TR's gateways into one list - each gateway is its own
-  // real TCP connection (its own IP/port/clientId), so auto-connect and
-  // auto-reconnect both operate per-gateway, not per-TR.
-  const gatewayEntries = transformers.flatMap((tr) => tr.gateways.map((gw) => ({ trId: tr.id, gw })));
-
-  // Auto-reconnect once per app load: the gateway's real TCP socket lives in
-  // a separate Node process, so a page reload always starts "disconnected"
-  // even though the user was connected before - reattach automatically for
-  // every gateway with a saved IP, using the same thunk the manual Connect
-  // button already dispatches. A ref (not state) guards this so it fires
-  // exactly once regardless of re-renders or route changes, since this
-  // layout stays mounted for the whole app session.
-  const hasAttemptedReconnect = useRef(false);
-  useEffect(() => {
-    if (hasAttemptedReconnect.current) return;
-    hasAttemptedReconnect.current = true;
-
-    // Skip a gateway already marked connected - e.g. this layout remounting
-    // after a logout/login cycle (the Redux store itself is a singleton
-    // that survives that navigation; only the component tree unmounts), not
-    // just a full page reload. Re-dispatching a redundant connect here was
-    // never the cause of a stuck "connecting" state on its own (the gateway
-    // server's own ModbusClient.connect() tears down and replaces the old
-    // socket cleanly either way), but it's unnecessary churn against a
-    // socket that's probably already fine - and the 5s reconnect-watcher
-    // effect below already covers the case where it secretly isn't.
-    gatewayEntries
-      .filter(({ gw }) => gw.ipAddress.trim() !== '' && !gw.isConnected && gw.autoReconnect !== false)
-      .forEach(({ trId, gw }) => {
-        dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port, busGroup: gw.busGroup }));
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Auto-reconnect on drop, not just on load: a read/write can discover the
-  // gateway's underlying TCP socket died mid-session (see ModbusClient.ts -
-  // a framing/timeout error tears the connection down since the byte stream
-  // can't be resynced), which flips a gateway's isConnected to false without
-  // the user touching anything. Poll every few seconds and retry
-  // connectGatewayAsync for any gateway that's down but has a saved IP and
-  // isn't already mid-connect-attempt - same thunk the manual Connect
-  // button uses, so status/error state stays consistent either way.
-  const gatewayEntriesRef = useRef(gatewayEntries);
-  useEffect(() => {
-    gatewayEntriesRef.current = gatewayEntries;
-    // gatewayEntries is a fresh array every render (derived via flatMap) -
-    // depend on `transformers` itself, the actual underlying reference that
-    // changes, rather than exhaustive-deps chasing the derived array.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transformers]);
-
-  // Exponential backoff per gateway (immediate, then 10s, 20s ... capped at 60s), reset
-  // once it's connected again - a fixed 5s retry for every down gateway at
-  // once kept unreachable gateways hammering the connect endpoint and kept
-  // every TR's status flipping between "connecting" and "not connected".
-  useEffect(() => {
-    const RECONNECT_CHECK_MS = 1000;
-    const RECONNECT_BASE_DELAY_MS = 5000;
-    const RECONNECT_MAX_DELAY_MS = 60_000;
-    const backoff = new Map<string, { attempts: number; nextAttemptAt: number }>();
-
-    const intervalId = setInterval(() => {
-      const now = Date.now();
-      for (const { trId, gw } of gatewayEntriesRef.current) {
-        if (gw.isConnected || gw.ipAddress.trim() === '') {
-          backoff.delete(gw.id);
-          continue;
-        }
-        if (gw.isConnecting || gw.autoReconnect === false) continue;
-
-        // First retry right away (e.g. the gateway server just restarted), then back off.
-        const entry = backoff.get(gw.id) ?? { attempts: 0, nextAttemptAt: now };
-        if (!backoff.has(gw.id)) backoff.set(gw.id, entry);
-        if (now < entry.nextAttemptAt) continue;
-
-        entry.attempts += 1;
-        entry.nextAttemptAt = now + Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** entry.attempts);
-        dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port, busGroup: gw.busGroup }));
-      }
-    }, RECONNECT_CHECK_MS);
-    return () => clearInterval(intervalId);
-  }, [dispatch]);
-
-  // Polls every enabled device's registers every 1s, for every transformer -
-  // not just whichever one happens to be the Dashboard's currently-selected
-  // tab. This used to live inside DevicePanel (mounted only for the
-  // selected transformer's devices), which meant every OTHER transformer's
-  // readings went stale the moment you weren't looking at its tab - visible
-  // in the dashboard, but also silently breaking the 60s readings-push below
-  // (it would push null/stale data for any device that hadn't been polled
-  // recently) and the annunciation-alarm watcher further down (it could
-  // never see a new alarm on a transformer you weren't currently viewing).
-  // DevicePanel now only reads state.dashboard.readingsByTrId; it no longer
-  // polls on its own. getState() is read fresh each tick (not via
-  // useSelector) for the same reason the 60s push below does it that way -
-  // this is deliberately NOT dependent on React state that changes every
-  // tick itself.
-  useEffect(() => {
-    const timeoutIds: ReturnType<typeof setTimeout>[] = [];
-
-    // Staggered, not a synchronous fan-out: browsers cap concurrent
-    // connections to one origin at 6 (a longstanding default across
-    // Chrome/Firefox/Safari) - with 3+ transformers' worth of devices all
-    // polled every second, firing every readTransformerRegistersAsync in
-    // the same tick can sit right at or over that ceiling, so later
-    // requests in the burst queue behind earlier ones at the browser's
-    // connection-pool level (not a Modbus/hardware problem at all) and
-    // never catch up, which surfaces as "stopped working" for transformers
-    // that have nothing wrong with their actual connection. Spacing each
-    // device's read by STAGGER_MS keeps the number actually in flight at
-    // once comfortably below that limit regardless of how many
-    // transformers/devices are configured.
-    const STAGGER_MS = 120;
-
-    const poll = () => {
-      timeoutIds.forEach(clearTimeout);
-      timeoutIds.length = 0;
-
-      const state = store.getState();
-      let delay = 0;
-      for (const tr of state.connectionSettings.transformers) {
-        for (const gw of tr.gateways) {
-          if (!gw.isConnected) continue;
-          for (const device of gw.subDevices) {
-            if (!device.enabled) continue;
-            // Never stack a new read on top of one still in flight: the
-            // gateway serializes reads per connection, so with several
-            // devices a slow/offline slave let the queue grow every tick
-            // until requests hit the HTTP timeout and the gateway got
-            // wrongly marked disconnected.
-            if (state.dashboard.readingsByTrId[`${tr.id}:${device.id}`]?.isReading) continue;
-            const { startAddress, count } = device.registerConfig;
-            const trId = tr.id;
-            const deviceId = device.id;
-            const slaveId = device.slaveId;
-            const clientId = gw.clientId;
-            timeoutIds.push(
-              setTimeout(() => {
-                dispatch(
-                  readTransformerRegistersAsync({
-                    trId: `${trId}:${deviceId}`,
-                    clientId,
-                    slaveId,
-                    startAddress,
-                    count,
-                  })
-                );
-              }, delay)
-            );
-            delay += STAGGER_MS;
-          }
-        }
-      }
-    };
-    poll();
-    const intervalId = setInterval(poll, REGISTER_POLL_INTERVAL_MS);
-    return () => {
-      clearInterval(intervalId);
-      timeoutIds.forEach(clearTimeout);
-    };
-  }, [dispatch, store]);
-
-  // Pushes a snapshot of every device's latest reading to tms-backend every
-  // readingsPushIntervalSeconds (user-configurable in Settings > Connection
-  // Settings, 60s minimum - see connectionSettings/slice.ts's
-  // MIN_READINGS_PUSH_INTERVAL_SECONDS) for historical storage/audit/mail-
-  // threshold evaluation - separate from (and much slower than) the 1s
-  // gateway polling above for live UI responsiveness. getState() is called
-  // fresh inside the interval rather than depending on the store's reading
-  // state directly, since that changes every ~1s and would otherwise mean
-  // re-creating this interval constantly; the push interval itself IS a
-  // dependency here, specifically so changing it in Settings tears down and
-  // restarts this timer with the new period immediately, rather than
-  // waiting for the old interval to finish its current cycle. Also fires
-  // once immediately on mount (readings will be null pre-connect, which the
-  // backend already tolerates) so the topology upsert happens right away -
-  // Settings > Mail Configuration lets a user save a device's alert
-  // thresholds immediately after adding it, and the backend's
-  // mail_thresholds table has a foreign key against a device row that must
-  // exist first; waiting a full interval for the first periodic push would
-  // otherwise make that save fail.
-  useEffect(() => {
-    const push = () => {
-      const request = buildReadingsPushRequest(store.getState());
-      if (request.transformers.length > 0) {
-        dispatch(pushReadingsBatchAsync(request));
-      }
-    };
-    push();
-    const intervalId = setInterval(push, readingsPushIntervalSeconds * 1000);
-    return () => clearInterval(intervalId);
-  }, [dispatch, store, readingsPushIntervalSeconds]);
+  // The gateway service connects to and polls the hardware, and pushes
+  // readings to the backend - independent of this tab, so minimizing or
+  // closing it doesn't interrupt anything. This keeps Settings in sync with
+  // it and refreshes the live values on screen.
+  useGatewayService();
 
   // Notifies on a NEW hardware-driven alarm too, not just an acknowledge
   // click (AnnunciationPanel.tsx's own showNotification call covers the

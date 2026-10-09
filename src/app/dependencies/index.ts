@@ -35,7 +35,7 @@ export function createDependencies(config: DependenciesConfig): Dependencies {
 
   // Lazy: Feature dependencies created on first access
   const auth = createLazyDependency(() => createAuthDependencies(infrastructure));
-  const modbus = createLazyDependency(() => createModbusDependencies());
+  const modbus = createLazyDependency(() => createModbusDependencies(infrastructure));
 
   return {
     infrastructure,

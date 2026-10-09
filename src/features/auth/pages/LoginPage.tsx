@@ -91,7 +91,11 @@ export const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row">
+    // The login screen is a light-only design (white card, dark text). The
+    // app's dark theme sets color-scheme: dark on the whole page, which makes
+    // the browser draw input text white - invisible on the white card after
+    // logging out from dark mode. Pin this screen to light.
+    <div className="min-h-screen flex flex-col lg:flex-row" style={{ colorScheme: 'light' }}>
       <div className="w-full lg:w-1/2 min-h-screen flex items-center justify-center px-4 sm:px-6 md:px-8 py-6 sm:py-12 bg-gradient-to-br from-blue-50 to-cyan-100">
         <div className="w-full max-w-md my-auto">
           <div className="bg-white rounded-xl sm:rounded-2xl shadow-lg p-6 sm:p-8">
@@ -138,7 +142,7 @@ export const LoginPage = () => {
                         setResetEmailError(null);
                       }}
                       placeholder="Enter your account email"
-                      className={`w-full px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition ${resetEmailError ? 'border-red-400' : 'border-gray-300'}`}
+                      className={`w-full px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base bg-white text-gray-900 placeholder-gray-400 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition ${resetEmailError ? 'border-red-400' : 'border-gray-300'}`}
                     />
                     {resetEmailError && <p className="text-red-600 text-xs mt-1">{resetEmailError}</p>}
                   </div>
@@ -173,7 +177,7 @@ export const LoginPage = () => {
                     setEmailError(null);
                   }}
                   placeholder="Enter email address"
-                  className={`w-full px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition ${emailError ? 'border-red-400' : 'border-gray-300'}`}
+                  className={`w-full px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base bg-white text-gray-900 placeholder-gray-400 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition ${emailError ? 'border-red-400' : 'border-gray-300'}`}
                 />
                 {emailError && <p className="text-red-600 text-xs mt-1">{emailError}</p>}
               </div>
@@ -197,7 +201,7 @@ export const LoginPage = () => {
                       setPasswordError(null);
                     }}
                     placeholder="Enter password"
-                    className={`w-full px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition pr-10 sm:pr-12 ${passwordError ? 'border-red-400' : 'border-gray-300'}`}
+                    className={`w-full px-3 sm:px-4 py-2.5 sm:py-3 text-sm sm:text-base bg-white text-gray-900 placeholder-gray-400 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition pr-10 sm:pr-12 ${passwordError ? 'border-red-400' : 'border-gray-300'}`}
                   />
                   <button
                     type="button"

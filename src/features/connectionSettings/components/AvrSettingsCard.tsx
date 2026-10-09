@@ -1,16 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
 import type { AvrSettingField, TransformerRegisterConfig } from '../../../domain/entities/TransformerRegisterMap';
 import { AVR_SETTING_FIELDS_COLUMN_1, AVR_SETTING_FIELDS_COLUMN_2, mapRegistersToReadings } from '../../../domain/entities/TransformerRegisterMap';
-import { readTransformerRegistersAsync, writeRegisterAsync } from '../../dashboard/slice';
+import { writeRegisterAsync } from '../../dashboard/slice';
 import { recordAuditEventAsync } from '../../auditLog/slice';
 
 // Same cadence as DevicePanel.tsx's dashboard poll - this card uses the same
 // readingKey (`${trId}:${device.id}`) so it shares state with the Dashboard
 // panel for this device rather than racing a second, differently-timed poll
 // against the same registers.
-const POLL_INTERVAL_MS = 1000;
 
 interface AvrSettingsCardProps {
   trId: string;
@@ -85,9 +84,8 @@ function SettingRow({ field, currentValue, unavailable, isWriting, onSubmit }: S
 // timing setpoints for one IRTCC device, each independently writable via
 // its own OK button - mirrors Form1.txt's AVR SETTINGS group box
 // (Btn_AVR_PTSet and its siblings, all writing via UpdateValues -> FC06).
-// Not a live-polled panel: values are read once on open via a direct FC03
-// read against this device's own registers, same connection the Dashboard
-// already uses for this device.
+// Shows the device's current AVR settings from the gateway service's live
+// polling, and writes changes over the same connection.
 export function AvrSettingsCard({ trId, clientId, isConnected, device }: AvrSettingsCardProps) {
   const dispatch = useAppDispatch();
   const writesByKey = useAppSelector((state) => state.dashboard.writesByKey);
@@ -100,23 +98,9 @@ export function AvrSettingsCard({ trId, clientId, isConnected, device }: AvrSett
   // runtime check in the caller (AvrSettingsCard is only rendered for
   // deviceType === 'irtcc' devices - see SettingsPage.tsx).
   const config = device.registerConfig as TransformerRegisterConfig;
-  const { startAddress, count } = config;
 
-  // Reads independently of the Dashboard's DevicePanel (same readingKey, so
-  // opening both at once shares state rather than double-polling) - a user
-  // navigating straight to Settings > AVR Settings without visiting the
-  // Dashboard first still sees live current values, not a stale placeholder.
-  useEffect(() => {
-    if (!isConnected) return;
-    const poll = () => {
-      dispatch(
-        readTransformerRegistersAsync({ trId: readingKey, clientId, slaveId: device.slaveId, startAddress, count })
-      );
-    };
-    poll();
-    const intervalId = setInterval(poll, POLL_INTERVAL_MS);
-    return () => clearInterval(intervalId);
-  }, [readingKey, clientId, isConnected, device.slaveId, startAddress, count, dispatch]);
+  // Current values come from the gateway service's live polling of this
+  // device (same readingKey as the Dashboard), so nothing to poll here.
 
   const readings = mapRegistersToReadings(readState?.registers ?? null, config.offsets);
   const unavailable = Boolean(readState?.errorMessage) || !isConnected;
@@ -127,6 +111,7 @@ export function AvrSettingsCard({ trId, clientId, isConnected, device }: AvrSett
     dispatch(
       writeRegisterAsync({
         key,
+        menu: 'AVR Settings',
         clientId,
         slaveId: device.slaveId,
         address: config.startAddress + config.offsets[field.key],

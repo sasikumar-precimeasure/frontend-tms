@@ -41,8 +41,8 @@ export function DataSyncSettingsCard() {
       <div className="px-4 py-3 bg-surface-50 border-b border-surface-200">
         <p className="text-sm font-semibold text-surface-800">Data Sync</p>
         <p className="text-xs text-surface-500 mt-0.5">
-          How often every device's latest reading is sent to the backend for history, audit, and mail-threshold
-          checks - applies to all transformers.
+          How often the gateway service sends every device's latest reading to the backend for history, monthly
+          reports and alarm emails - applies to all transformers, and keeps running with this page minimized or closed.
         </p>
       </div>
       <div className="px-4 py-3 flex flex-wrap items-end gap-3">
@@ -78,9 +78,19 @@ export function DataSyncSettingsCard() {
 // Whether the pushes are actually landing - a failing push otherwise only
 // shows up later as gaps in the Data Log / monthly report.
 function PushStatus() {
-  const { lastAttemptAt, lastSuccessAt, lastError, failuresInARow } = useAppSelector((state) => state.readingsPush);
+  const { lastAttemptAt, lastSuccessAt, lastError, failuresInARow, serviceUnreachable } = useAppSelector(
+    (state) => state.readingsPush
+  );
   const time = (iso: string | null) => (iso ? new Date(iso).toLocaleTimeString() : 'never');
 
+  if (serviceUnreachable) {
+    return (
+      <div className="mx-4 mb-3 px-3 py-2 rounded-md bg-status-critical-soft text-status-critical text-xs">
+        <p className="font-semibold">{serviceUnreachable}</p>
+        <p className="mt-0.5">Nothing is being read or saved until it runs again - start it with "npm run dev:setup".</p>
+      </div>
+    );
+  }
   if (!lastAttemptAt) {
     return <p className="px-4 pb-3 text-xs text-surface-500">Last sync: waiting for the first push…</p>;
   }

@@ -10,6 +10,8 @@ import {
   sendMonthlyReportNowAsync,
 } from '../../monthlyReport/slice';
 import { showToast } from '../../toast/slice';
+import { useCanWrite } from '../../../shared/hooks/usePermissions';
+import { WriteGate } from '../../../shared/components/WriteGate';
 
 const DAYS_OF_MONTH = Array.from({ length: 28 }, (_, i) => i + 1);
 
@@ -280,7 +282,7 @@ function RecipientsSection() {
 
 // Manual generate: download any month's report, or email it right now
 // (doesn't affect the automatic schedule).
-function GenerateSection() {
+function GenerateSection({ canSend }: { canSend: boolean }) {
   const dispatch = useAppDispatch();
   const [month, setMonth] = useState(previousMonth);
   const [busy, setBusy] = useState<'download' | 'send' | null>(null);
@@ -329,7 +331,8 @@ function GenerateSection() {
         </button>
         <button
           onClick={() => run('send')}
-          disabled={busy !== null || !month}
+          disabled={busy !== null || !month || !canSend}
+          title={canSend ? undefined : 'Needs write permission on Monthly Report'}
           className="px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-white hover:bg-primary-700 transition disabled:opacity-50"
         >
           {busy === 'send' ? 'Sending…' : 'Send to recipients now'}
@@ -342,6 +345,8 @@ function GenerateSection() {
 
 export const MonthlyReportCard = () => {
   const dispatch = useAppDispatch();
+  // Read-only users may download reports, but not change or send them.
+  const canWrite = useCanWrite('Monthly Report');
   const loaded = useAppSelector((state) => state.monthlyReport.loaded);
   const loadError = useAppSelector((state) => state.monthlyReport.loadError);
 
@@ -362,9 +367,11 @@ export const MonthlyReportCard = () => {
 
   return (
     <div className="space-y-4">
-      <ScheduleSection />
-      <RecipientsSection />
-      <GenerateSection />
+      <WriteGate menu="Monthly Report">
+        <ScheduleSection />
+        <RecipientsSection />
+      </WriteGate>
+      <GenerateSection canSend={canWrite} />
     </div>
   );
 };

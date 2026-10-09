@@ -2,6 +2,9 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
 import type { Dependencies } from '../../app/dependencies';
 import { AxiosError } from 'axios';
+import { liveSnapshotReceived } from '../live/actions';
+import type { RootState } from '../../app/store';
+import { hasWritePermission } from '../../shared/hooks/usePermissions';
 
 interface TrReadState {
   registers: number[] | null;
@@ -34,37 +37,21 @@ function extractErrorMessage(error: unknown): string {
   return 'An unknown error occurred';
 }
 
-// Reads FC03 holding registers for one TR's linked gateway/slave (mirrors
-// ModbusClient.vb ReadRegisters); each TR panel polls this independently.
-export const readTransformerRegistersAsync = createAsyncThunk<
-  { trId: string; registers: number[] | null; errorMessage: string | null; isConnected: boolean },
-  { trId: string; clientId: number; slaveId: number; startAddress: number; count: number },
-  { extra: Dependencies }
->('dashboard/readTransformerRegisters', async (request, { extra, rejectWithValue }) => {
-  try {
-    const modbus = extra.modbus();
-    const result = await modbus.readHoldingRegistersUseCase.execute(request);
-    return {
-      trId: request.trId,
-      registers: result.registers,
-      errorMessage: result.errorMessage,
-      isConnected: result.isConnected,
-    };
-  } catch (error: unknown) {
-    // No parseable error body at all (e.g. the gateway process itself is
-    // unreachable) - treat this the same as a confirmed disconnect, since
-    // there's no live socket to speak of either way.
-    return rejectWithValue({ trId: request.trId, message: extractErrorMessage(error), isConnected: false });
-  }
-});
-
 // Writes a single register (mirrors ModbusClient.vb WriteSingleRegister / FC06) -
 // used by the annunciation panel to acknowledge an alarm on the device itself.
+// `menu` is the screen the command comes from - the user needs WRITE
+// permission on it (AVR Settings for setpoints written there, Dashboard for
+// the dashboard's controls). Checked here so a read-only user's command is
+// never sent, and again by the gateway service.
 export const writeRegisterAsync = createAsyncThunk<
   { key: string; errorMessage: string | null; isConnected: boolean },
-  { key: string; clientId: number; slaveId: number; address: number; value: number },
-  { extra: Dependencies }
->('dashboard/writeRegister', async (request, { extra, rejectWithValue }) => {
+  { key: string; clientId: number; slaveId: number; address: number; value: number; menu?: 'Dashboard' | 'AVR Settings' },
+  { extra: Dependencies; state: RootState }
+>('dashboard/writeRegister', async (request, { extra, getState, rejectWithValue }) => {
+  const menu = request.menu ?? 'Dashboard';
+  if (!hasWritePermission(getState().auth.permissions, menu)) {
+    return rejectWithValue({ key: request.key, message: `You don't have permission to change ${menu}`, isConnected: true });
+  }
   try {
     const modbus = extra.modbus();
     const result = await modbus.writeSingleRegisterUseCase.execute(request);
@@ -98,23 +85,16 @@ const dashboardSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      .addCase(readTransformerRegistersAsync.pending, (state, action) => {
-        ensureTrState(state, action.meta.arg.trId).isReading = true;
-      })
-      .addCase(readTransformerRegistersAsync.fulfilled, (state, action) => {
-        const trState = ensureTrState(state, action.payload.trId);
-        trState.isReading = false;
-        trState.registers = action.payload.registers;
-        trState.errorMessage = action.payload.errorMessage;
-        trState.lastReadAt = new Date().toISOString();
-      })
-      .addCase(readTransformerRegistersAsync.rejected, (state, action) => {
-        const payload = action.payload as { trId: string; message: string } | undefined;
-        const trId = payload?.trId ?? action.meta.arg.trId;
-        const trState = ensureTrState(state, trId);
-        trState.isReading = false;
-        trState.errorMessage = payload?.message ?? 'Read failed';
-        trState.lastReadAt = new Date().toISOString();
+      // Every device's latest reading, polled by the gateway service (not
+      // this tab) - see features/live.
+      .addCase(liveSnapshotReceived, (state, action) => {
+        for (const [key, live] of Object.entries(action.payload.devicesByReadingKey)) {
+          const trState = ensureTrState(state, key);
+          trState.isReading = false;
+          trState.registers = live.registers;
+          trState.errorMessage = live.errorMessage;
+          trState.lastReadAt = live.lastReadAt;
+        }
       })
       .addCase(writeRegisterAsync.pending, (state, action) => {
         const writeState = ensureWriteState(state, action.meta.arg.key);

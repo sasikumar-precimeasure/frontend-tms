@@ -1,9 +1,10 @@
+import { AxiosError } from 'axios';
 import type { AxiosInstance } from 'axios';
 import type { ModbusRepository } from '../../domain/repositories/ModbusRepository';
 import type {
-  ModbusConnection,
-  ModbusConnectRequest,
-  ModbusDisconnectRequest,
+  GatewayServiceConfig,
+  LiveSnapshot,
+  PutConfigResult,
   ModbusReadRequest,
   ModbusReadResult,
   ModbusWriteRequest,
@@ -11,10 +12,9 @@ import type {
 } from '../../domain/entities/Modbus';
 
 // Calls the local Modbus gateway service (server/), which owns the real TCP
-// socket to the hardware via Node's net.Socket - the direct equivalent of
-// System.Net.Sockets.TcpClient in ModbusClient.vb. A browser cannot open a
-// raw TCP socket itself, so this gateway is what actually plays the VB
-// class's role; this repository just calls its Connect/Disconnect endpoints.
+// sockets to the hardware and polls every device itself. This repository
+// syncs the device configuration with it, fetches its live snapshot, and
+// sends on-demand reads/writes.
 export class ModbusRepositoryImpl implements ModbusRepository {
   private apiClient: AxiosInstance;
 
@@ -22,24 +22,26 @@ export class ModbusRepositoryImpl implements ModbusRepository {
     this.apiClient = apiClient;
   }
 
-  async connect(request: ModbusConnectRequest): Promise<ModbusConnection> {
+  async getConfig(): Promise<GatewayServiceConfig> {
+    const response = await this.apiClient.get<{ config: GatewayServiceConfig }>('/api/config');
+    return response.data.config;
+  }
+
+  async putConfig(config: GatewayServiceConfig): Promise<PutConfigResult> {
     try {
-      const response = await this.apiClient.post<ModbusConnection>('/api/modbus/connect', request);
-      return response.data;
+      const response = await this.apiClient.put<{ config: GatewayServiceConfig }>('/api/config', { config });
+      return { status: 'saved', config: response.data.config };
     } catch (ex) {
-      const data = this.extractErrorPayload<ModbusConnection>(ex);
-      if (data) return data;
+      const conflict = this.extractErrorPayload<{ config?: GatewayServiceConfig }>(ex);
+      if (ex instanceof AxiosError && ex.response?.status === 409 && conflict?.config) {
+        return { status: 'conflict', config: conflict.config };
+      }
       throw ex;
     }
   }
 
-  async disconnect(request: ModbusDisconnectRequest): Promise<ModbusConnection> {
-    const response = await this.apiClient.post<ModbusConnection>('/api/modbus/disconnect', request);
-    return response.data;
-  }
-
-  async getStatus(clientId: number): Promise<ModbusConnection> {
-    const response = await this.apiClient.get<ModbusConnection>(`/api/modbus/status/${clientId}`);
+  async getLive(): Promise<LiveSnapshot> {
+    const response = await this.apiClient.get<LiveSnapshot>('/api/live');
     return response.data;
   }
 

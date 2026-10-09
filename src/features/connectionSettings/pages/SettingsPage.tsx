@@ -9,13 +9,16 @@ import { RegisterMapCard } from '../components/RegisterMapCard';
 import { AvrSettingsCard } from '../components/AvrSettingsCard';
 import { MailConfigurationCard } from '../components/MailConfigurationCard';
 import { MonthlyReportCard } from '../components/MonthlyReportCard';
-import { useHasMenuPermission } from '../../../shared/hooks/usePermissions';
-import { selectTr, addTransformer, removeTransformer, renameTransformer, addGateway, disconnectGatewayAsync } from '../slice';
+import { useCanWrite, useHasMenuPermission } from '../../../shared/hooks/usePermissions';
+import { WriteGate } from '../../../shared/components/WriteGate';
+import { selectTr, addTransformer, removeTransformer, renameTransformer, addGateway } from '../slice';
 
 const SettingsPage = () => {
   const dispatch = useAppDispatch();
   // Monthly Report has its own permission (Super Admin only by default).
   const canSeeMonthlyReport = useHasMenuPermission('Monthly Report');
+  // Adding/renaming/removing transformers is a Connection Settings change.
+  const canEditTransformers = useCanWrite('Connection Settings');
   const { selectedTrId, transformers } = useAppSelector((state) => state.connectionSettings);
   const firstAllowedSection = useFirstAllowedSettingsSection();
   const [section, setSection] = useState<SettingsSection | null>(firstAllowedSection);
@@ -50,12 +53,14 @@ const SettingsPage = () => {
           <div className="bg-surface-0 rounded-lg border border-surface-200 p-4 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500">Transformers</p>
-              <button
-                onClick={() => dispatch(addTransformer())}
-                className="text-xs font-semibold text-primary hover:text-primary-700"
-              >
-                + Add
-              </button>
+              {canEditTransformers && (
+                <button
+                  onClick={() => dispatch(addTransformer())}
+                  className="text-xs font-semibold text-primary hover:text-primary-700"
+                >
+                  + Add
+                </button>
+              )}
             </div>
 
             <select
@@ -77,22 +82,19 @@ const SettingsPage = () => {
                   <input
                     value={selectedTr.name}
                     onChange={(e) => dispatch(renameTransformer({ trId: selectedTr.id, name: e.target.value }))}
-                    className="w-full px-2.5 py-1.5 text-sm border border-surface-300 rounded-md"
+                    disabled={!canEditTransformers}
+                    className="w-full px-2.5 py-1.5 text-sm border border-surface-300 rounded-md disabled:bg-surface-100 disabled:text-surface-500"
                   />
                 </div>
 
-                <button
-                  onClick={() => {
-                    // Release each gateway's server connection, not just the UI entry.
-                    selectedTr.gateways.forEach((gw) =>
-                      dispatch(disconnectGatewayAsync({ trId: selectedTr.id, gatewayId: gw.id, clientId: gw.clientId }))
-                    );
-                    dispatch(removeTransformer({ trId: selectedTr.id }));
-                  }}
-                  className="text-xs text-surface-400 hover:text-status-critical font-medium"
-                >
-                  Remove this transformer
-                </button>
+                {canEditTransformers && (
+                  <button
+                    onClick={() => dispatch(removeTransformer({ trId: selectedTr.id }))}
+                    className="text-xs text-surface-400 hover:text-status-critical font-medium"
+                  >
+                    Remove this transformer
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -107,7 +109,9 @@ const SettingsPage = () => {
 
           {section === 'Mail Configuration' ? (
             <div className="space-y-4">
-              <MailConfigurationCard />
+              <WriteGate menu="Mail Configuration">
+                <MailConfigurationCard />
+              </WriteGate>
               {canSeeMonthlyReport && <MonthlyReportCard />}
             </div>
           ) : selectedTr ? (
@@ -119,7 +123,7 @@ const SettingsPage = () => {
                     .map((device) => ({ device, gateway }))
                 );
                 return irtccDevices.length > 0 ? (
-                  <>
+                  <WriteGate menu="AVR Settings">
                     {irtccDevices.map(({ device, gateway }) => (
                       <AvrSettingsCard
                         key={device.id}
@@ -129,7 +133,7 @@ const SettingsPage = () => {
                         device={device}
                       />
                     ))}
-                  </>
+                  </WriteGate>
                 ) : (
                   <div className="bg-surface-0 rounded-lg border border-dashed border-surface-300 p-8 text-center">
                     <p className="text-sm text-surface-500">
@@ -139,7 +143,7 @@ const SettingsPage = () => {
                 );
               })()
             ) : (
-              <>
+              <WriteGate menu="Connection Settings">
                 <DataSyncSettingsCard />
                 {selectedTr.gateways.map((gateway) => (
                   <TransformerConnectionCard key={gateway.id} trId={selectedTr.id} gateway={gateway} />
@@ -155,17 +159,19 @@ const SettingsPage = () => {
                     <RegisterMapCard key={device.id} trId={selectedTr.id} gatewayId={gateway.id} device={device} />
                   ))
                 )}
-              </>
+              </WriteGate>
             )
           ) : (
             <div className="bg-surface-0 rounded-lg border border-dashed border-surface-300 p-8 text-center">
               <p className="text-sm text-surface-500">No transformers configured yet.</p>
-              <button
-                onClick={() => dispatch(addTransformer())}
-                className="mt-2 text-sm font-semibold text-primary hover:text-primary-700"
-              >
-                + Add your first transformer
-              </button>
+              {canEditTransformers && (
+                <button
+                  onClick={() => dispatch(addTransformer())}
+                  className="mt-2 text-sm font-semibold text-primary hover:text-primary-700"
+                >
+                  + Add your first transformer
+                </button>
+              )}
             </div>
           )}
         </main>

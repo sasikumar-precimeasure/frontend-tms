@@ -1,4 +1,4 @@
-import { createSlice, createAsyncThunk, nanoid } from '@reduxjs/toolkit';
+import { createSlice, nanoid } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
 import type { DeviceType, Transformer, Gateway, SubDevice } from '../../domain/entities/ConnectionSettings';
 import type { RegisterOffsetMap } from '../../domain/entities/TransformerRegisterMap';
@@ -7,9 +7,8 @@ import type { Device2243OffsetMap } from '../../domain/entities/Device2243Regist
 import { DEFAULT_2243_REGISTER_CONFIG } from '../../domain/entities/Device2243RegisterMap';
 import type { MailThresholds } from '../../domain/entities/MailSettings';
 import { DEFAULT_MAIL_THRESHOLDS } from '../../domain/entities/MailSettings';
-import type { Dependencies } from '../../app/dependencies';
-import { AxiosError } from 'axios';
-import { readTransformerRegistersAsync, writeRegisterAsync } from '../dashboard/slice';
+import type { GatewayServiceConfig } from '../../domain/entities/Modbus';
+import { gatewayServiceUnreachable, liveSnapshotReceived } from '../live/actions';
 
 function cloneDefaultRegisterConfig() {
   return {
@@ -48,6 +47,10 @@ interface ConnectionSettingsState {
   // wherever this is set, not just in the UI, so a corrupted/hand-edited
   // localStorage value below the floor can't silently take effect.
   readingsPushIntervalSeconds: number;
+  // Version (ms timestamp) of these settings as last synced with the
+  // gateway service, which keeps its own copy and does the polling - see
+  // features/live/useGatewayService. 0 = never synced.
+  configVersion: number;
 }
 
 export const MIN_READINGS_PUSH_INTERVAL_SECONDS = 60;
@@ -57,7 +60,7 @@ const PERSIST_KEY = 'tms-connection-settings';
 
 type PersistedState = Pick<
   ConnectionSettingsState,
-  'transformers' | 'selectedTrId' | 'nextClientId' | 'readingsPushIntervalSeconds'
+  'transformers' | 'selectedTrId' | 'nextClientId' | 'readingsPushIntervalSeconds' | 'configVersion'
 >;
 
 // Live connection state belongs to the gateway's real TCP socket, not this
@@ -253,6 +256,7 @@ function loadPersistedState(): PersistedState | null {
       selectedTrId: string;
       nextClientId: number;
       readingsPushIntervalSeconds: number;
+      configVersion: number;
     }>;
     if (!Array.isArray(parsed.transformers) || parsed.transformers.length === 0) return null;
     const transformers = ensureUniqueClientIds(
@@ -270,6 +274,7 @@ function loadPersistedState(): PersistedState | null {
         parsed.readingsPushIntervalSeconds >= MIN_READINGS_PUSH_INTERVAL_SECONDS
           ? parsed.readingsPushIntervalSeconds
           : DEFAULT_READINGS_PUSH_INTERVAL_SECONDS,
+      configVersion: typeof parsed.configVersion === 'number' ? parsed.configVersion : 0,
     };
   } catch {
     // Corrupt/stale localStorage content - fall back to defaults rather
@@ -285,6 +290,7 @@ export function persistConnectionSettings(state: ConnectionSettingsState): void 
     selectedTrId: state.selectedTrId,
     nextClientId: state.nextClientId,
     readingsPushIntervalSeconds: state.readingsPushIntervalSeconds,
+    configVersion: state.configVersion,
   };
   try {
     window.localStorage.setItem(PERSIST_KEY, JSON.stringify(payload));
@@ -350,71 +356,82 @@ const initialState: ConnectionSettingsState = persisted ?? {
   ...makeDefaultState(),
   nextClientId: 3,
   readingsPushIntervalSeconds: DEFAULT_READINGS_PUSH_INTERVAL_SECONDS,
+  configVersion: 0,
 };
-
-function extractErrorMessage(error: unknown): string {
-  if (error instanceof AxiosError) {
-    const data = error.response?.data as { message?: string } | undefined;
-    if (data?.message) return data.message;
-  }
-  if (error instanceof Error) return error.message;
-  return 'An unknown error occurred';
-}
 
 function findGateway(state: ConnectionSettingsState, trId: string, gatewayId: string): Gateway | undefined {
   return state.transformers.find((t) => t.id === trId)?.gateways.find((g) => g.id === gatewayId);
 }
 
-function findGatewayByClientId(state: ConnectionSettingsState, clientId: number): Gateway | undefined {
-  for (const tr of state.transformers) {
-    const gw = tr.gateways.find((g) => g.clientId === clientId);
-    if (gw) return gw;
-  }
-  return undefined;
+// Settings coming back from the gateway service (another tab/browser
+// changed them, or this browser's saved copy was older). Connection states
+// already shown are kept until the next live snapshot replaces them.
+function transformersFromGateway(config: GatewayServiceConfig, previous: Transformer[]): Transformer[] {
+  const previousGateways = new Map(previous.flatMap((tr) => tr.gateways).map((gw) => [gw.id, gw]));
+  // Mail thresholds aren't part of the gateway's copy - keep this browser's.
+  const previousDevices = new Map(previous.flatMap((tr) => tr.gateways.flatMap((gw) => gw.subDevices)).map((d) => [d.id, d]));
+  const transformers: Transformer[] = config.transformers.map((tr) => ({
+    id: tr.id,
+    name: tr.name,
+    gateways: tr.gateways.map((gw) => {
+      const old = previousGateways.get(gw.id);
+      return {
+        id: gw.id,
+        name: gw.name,
+        clientId: gw.clientId,
+        ipAddress: gw.ipAddress,
+        port: gw.port,
+        busGroup: gw.busGroup,
+        autoReconnect: gw.autoConnect,
+        status: old?.status ?? 'disconnected',
+        isConnected: old?.isConnected ?? false,
+        isConnecting: old?.isConnecting ?? false,
+        errorMessage: old?.errorMessage ?? null,
+        subDevices: (gw.subDevices as unknown as SubDevice[]).map((device) => ({
+          ...device,
+          mailThresholds: previousDevices.get(device.id)?.mailThresholds ?? device.mailThresholds,
+        })),
+      };
+    }),
+  }));
+  return ensureUniqueClientIds(migrateMailThresholds(migrateIrtccOffsets(migrateSubDevices(transformers))));
 }
-
-// -- Connect one gateway's own connection -- (mirrors ModbusClient.vb Connect(ipAddress, port))
-export const connectGatewayAsync = createAsyncThunk<
-  { trId: string; gatewayId: string; clientId: number; status: string; isConnected: boolean; errorMessage: string | null },
-  { trId: string; gatewayId: string; clientId: number; ipAddress: string; port: number; busGroup?: string },
-  { extra: Dependencies }
->('connectionSettings/connectGateway', async (request, { extra, rejectWithValue }) => {
-  try {
-    const modbus = extra.modbus();
-    const result = await modbus.connectModbusUseCase.execute({
-      clientId: request.clientId,
-      ipAddress: request.ipAddress,
-      port: request.port,
-      busGroup: request.busGroup,
-    });
-    return {
-      trId: request.trId,
-      gatewayId: request.gatewayId,
-      clientId: result.clientId,
-      status: result.status,
-      isConnected: result.isConnected,
-      errorMessage: result.errorMessage,
-    };
-  } catch (error: unknown) {
-    return rejectWithValue({ trId: request.trId, gatewayId: request.gatewayId, message: extractErrorMessage(error) });
-  }
-});
-
-// -- Disconnect one gateway's own connection -- (mirrors ModbusClient.vb Disconnect())
-export const disconnectGatewayAsync = createAsyncThunk<
-  { trId: string; gatewayId: string; status: string; isConnected: boolean },
-  { trId: string; gatewayId: string; clientId: number },
-  { extra: Dependencies }
->('connectionSettings/disconnectGateway', async (request, { extra }) => {
-  const modbus = extra.modbus();
-  const result = await modbus.disconnectModbusUseCase.execute({ clientId: request.clientId });
-  return { trId: request.trId, gatewayId: request.gatewayId, status: result.status, isConnected: result.isConnected };
-});
 
 const connectionSettingsSlice = createSlice({
   name: 'connectionSettings',
   initialState,
   reducers: {
+    setConfigVersion: (state, action: PayloadAction<number>) => {
+      state.configVersion = action.payload;
+    },
+    replaceConfigFromGateway: (state, action: PayloadAction<GatewayServiceConfig>) => {
+      const config = action.payload;
+      state.transformers = transformersFromGateway(config, state.transformers);
+      state.readingsPushIntervalSeconds = Math.max(MIN_READINGS_PUSH_INTERVAL_SECONDS, config.readingsPushIntervalSeconds);
+      state.configVersion = config.version;
+      const maxClientId = Math.max(0, ...state.transformers.flatMap((tr) => tr.gateways.map((gw) => gw.clientId)));
+      state.nextClientId = Math.max(state.nextClientId, maxClientId + 1);
+      if (!state.transformers.some((tr) => tr.id === state.selectedTrId)) {
+        state.selectedTrId = state.transformers[0]?.id ?? '';
+      }
+    },
+    // Connect / Disconnect buttons: the gateway service connects and polls
+    // only gateways with this on (synced to it as `autoConnect`).
+    setGatewayAutoConnect: (state, action: PayloadAction<{ trId: string; gatewayId: string; autoConnect: boolean }>) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      if (gw) {
+        gw.autoReconnect = action.payload.autoConnect;
+        gw.errorMessage = null;
+        if (action.payload.autoConnect) {
+          gw.status = 'connecting';
+          gw.isConnecting = true;
+        } else {
+          gw.status = 'disconnected';
+          gw.isConnected = false;
+          gw.isConnecting = false;
+        }
+      }
+    },
     selectTr: (state, action: PayloadAction<string>) => {
       state.selectedTrId = action.payload;
     },
@@ -593,96 +610,44 @@ const connectionSettingsSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      .addCase(connectGatewayAsync.pending, (state, action) => {
-        const gw = findGateway(state, action.meta.arg.trId, action.meta.arg.gatewayId);
-        if (gw) {
-          gw.autoReconnect = true;
-          gw.isConnecting = true;
-          gw.status = 'connecting';
-          gw.errorMessage = null;
+      // Connection states come from the gateway service, which owns the
+      // connections - see features/live.
+      .addCase(liveSnapshotReceived, (state, action) => {
+        const { gateways } = action.payload.snapshot;
+        for (const tr of state.transformers) {
+          for (const gw of tr.gateways) {
+            const live = gateways[gw.id];
+            if (live) {
+              gw.status = live.status;
+              gw.isConnected = live.isConnected;
+              gw.isConnecting = live.isConnecting;
+              gw.errorMessage = live.errorMessage;
+            } else if (gw.autoReconnect === false || gw.ipAddress.trim() === '') {
+              gw.status = 'disconnected';
+              gw.isConnected = false;
+              gw.isConnecting = false;
+            }
+          }
         }
       })
-      .addCase(connectGatewayAsync.fulfilled, (state, action) => {
-        const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
-        if (gw) {
-          gw.isConnecting = false;
-          gw.status = action.payload.status as Gateway['status'];
-          gw.isConnected = action.payload.isConnected;
-          gw.errorMessage = action.payload.errorMessage;
-        }
-      })
-      .addCase(connectGatewayAsync.rejected, (state, action) => {
-        const payload = action.payload as { trId: string; gatewayId: string; message: string } | undefined;
-        const trId = payload?.trId ?? action.meta.arg.trId;
-        const gatewayId = payload?.gatewayId ?? action.meta.arg.gatewayId;
-        const gw = findGateway(state, trId, gatewayId);
-        if (gw) {
-          gw.isConnecting = false;
-          gw.status = 'error';
-          gw.isConnected = false;
-          gw.errorMessage = payload?.message ?? 'Connection failed';
-        }
-      })
-      .addCase(disconnectGatewayAsync.pending, (state, action) => {
-        const gw = findGateway(state, action.meta.arg.trId, action.meta.arg.gatewayId);
-        if (gw) gw.autoReconnect = false;
-      })
-      .addCase(disconnectGatewayAsync.fulfilled, (state, action) => {
-        const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
-        if (gw) {
-          gw.status = action.payload.status as Gateway['status'];
-          gw.isConnected = action.payload.isConnected;
-          gw.errorMessage = null;
-        }
-      })
-      // A read/write against a dead socket tells us the gateway's connection
-      // for this clientId dropped (ModbusClient disconnects itself on a
-      // framing/timeout error, since the byte stream can't be resynced) -
-      // mirror that into isConnected here so the auto-reconnect watcher in
-      // TmsAppLayout notices and retries, instead of leaving the UI stuck
-      // showing "connected" against a socket that's actually gone.
-      .addCase(readTransformerRegistersAsync.fulfilled, (state, action) => {
-        if (action.payload.isConnected) return;
-        const gw = findGatewayByClientId(state, action.meta.arg.clientId);
-        if (gw && gw.isConnected) {
-          gw.isConnected = false;
-          gw.status = 'error';
-          gw.errorMessage = action.payload.errorMessage;
-        }
-      })
-      .addCase(readTransformerRegistersAsync.rejected, (state, action) => {
-        const payload = action.payload as { isConnected?: boolean; message?: string } | undefined;
-        if (payload?.isConnected !== false) return;
-        const gw = findGatewayByClientId(state, action.meta.arg.clientId);
-        if (gw && gw.isConnected) {
-          gw.isConnected = false;
-          gw.status = 'error';
-          gw.errorMessage = payload.message ?? 'Read failed';
-        }
-      })
-      .addCase(writeRegisterAsync.fulfilled, (state, action) => {
-        if (action.payload.isConnected) return;
-        const gw = findGatewayByClientId(state, action.meta.arg.clientId);
-        if (gw && gw.isConnected) {
-          gw.isConnected = false;
-          gw.status = 'error';
-          gw.errorMessage = action.payload.errorMessage;
-        }
-      })
-      .addCase(writeRegisterAsync.rejected, (state, action) => {
-        const payload = action.payload as { isConnected?: boolean; message?: string } | undefined;
-        if (payload?.isConnected !== false) return;
-        const gw = findGatewayByClientId(state, action.meta.arg.clientId);
-        if (gw && gw.isConnected) {
-          gw.isConnected = false;
-          gw.status = 'error';
-          gw.errorMessage = payload.message ?? 'Write failed';
+      .addCase(gatewayServiceUnreachable, (state, action) => {
+        for (const tr of state.transformers) {
+          for (const gw of tr.gateways) {
+            if (gw.autoReconnect === false || gw.ipAddress.trim() === '') continue;
+            gw.status = 'error';
+            gw.isConnected = false;
+            gw.isConnecting = false;
+            gw.errorMessage = action.payload;
+          }
         }
       });
   },
 });
 
 export const {
+  setConfigVersion,
+  replaceConfigFromGateway,
+  setGatewayAutoConnect,
   selectTr,
   addTransformer,
   removeTransformer,

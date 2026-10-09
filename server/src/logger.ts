@@ -9,13 +9,14 @@
 //   LOG_DIR=...      where log files go (default: server/logs)
 import { appendFile, appendFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { DEFAULT_LOG_DIR } from './paths';
 
 type Level = 'debug' | 'info' | 'warn' | 'error';
 
 const LEVELS: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 const configured = (process.env.LOG_LEVEL ?? 'info').toLowerCase() as Level;
 const threshold = LEVELS[configured] ?? LEVELS.info;
-const logDir = process.env.LOG_DIR ?? join(__dirname, '..', 'logs');
+const logDir = process.env.LOG_DIR ?? DEFAULT_LOG_DIR;
 
 let fileLoggingAvailable = true;
 try {

@@ -2,27 +2,6 @@
 // Mirrors ModbusClient.vb: StatusChanged(clientId, status, connected) / ErrorOccurred(clientId, errorMsg, slaveId)
 export type ModbusConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
-export interface ModbusConnection {
-  clientId: number;
-  ipAddress: string;
-  port: number;
-  status: ModbusConnectionStatus;
-  isConnected: boolean;
-  errorMessage: string | null;
-}
-
-export interface ModbusConnectRequest {
-  clientId: number;
-  ipAddress: string;
-  port: number;
-  busGroup?: string;
-}
-
-export interface ModbusDisconnectRequest {
-  clientId: number;
-}
-
-// -- FC03: Read Holding Registers --
 export interface ModbusReadRequest {
   clientId: number;
   slaveId: number;
@@ -57,4 +36,73 @@ export interface ModbusWriteResult {
   value: number;
   errorMessage: string | null;
   isConnected: boolean;
+}
+
+// -- Gateway service (server/) --
+// The gateway service owns the hardware: it stores the device configuration
+// below, polls every device once a second and pushes readings to the
+// backend, independent of any browser tab. The website uploads the
+// configuration and displays the live snapshot.
+
+export interface GatewayServiceDevice {
+  id: string;
+  name: string;
+  enabled: boolean;
+  slaveId: number;
+  deviceType: 'irtcc' | '2243';
+  registerConfig: unknown;
+  [extra: string]: unknown;
+}
+
+export interface GatewayServiceGateway {
+  id: string;
+  name: string;
+  clientId: number;
+  ipAddress: string;
+  port: number;
+  autoConnect: boolean;
+  busGroup?: string;
+  subDevices: GatewayServiceDevice[];
+}
+
+export interface GatewayServiceConfig {
+  // Timestamp (ms) of the edit it came from - an older upload is refused.
+  version: number;
+  readingsPushIntervalSeconds: number;
+  transformers: { id: string; name: string; gateways: GatewayServiceGateway[] }[];
+}
+
+export type PutConfigResult =
+  | { status: 'saved'; config: GatewayServiceConfig }
+  // The gateway already has newer settings (another tab/browser) - those
+  // are returned so this tab can switch to them.
+  | { status: 'conflict'; config: GatewayServiceConfig };
+
+export interface LiveDeviceReading {
+  registers: number[] | null;
+  errorMessage: string | null;
+  lastReadAt: string | null;
+  lastSuccessAt: string | null;
+}
+
+export interface LiveGatewayState {
+  status: ModbusConnectionStatus;
+  isConnected: boolean;
+  isConnecting: boolean;
+  errorMessage: string | null;
+}
+
+export interface LivePushStatus {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  failuresInARow: number;
+}
+
+export interface LiveSnapshot {
+  configVersion: number;
+  gateways: Record<string, LiveGatewayState>;
+  devices: Record<string, LiveDeviceReading>;
+  push: LivePushStatus;
+  serverTime: string;
 }

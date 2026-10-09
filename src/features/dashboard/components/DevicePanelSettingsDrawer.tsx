@@ -1,6 +1,7 @@
 import type { SubDevice } from '../../../domain/entities/ConnectionSettings';
 import type { DashboardReadings, TransformerRegisterConfig } from '../../../domain/entities/TransformerRegisterMap';
 import { AnnunciationPanel } from './AnnunciationPanel';
+import { useCanWrite } from '../../../shared/hooks/usePermissions';
 
 interface DevicePanelSettingsDrawerProps {
   trId: string;
@@ -23,6 +24,8 @@ export function DevicePanelSettingsDrawer({
   unavailable,
   onClose,
 }: DevicePanelSettingsDrawerProps) {
+  // Acknowledge / mute are commands to the device - Dashboard write only.
+  const canControl = useCanWrite('Dashboard');
   // This drawer is only rendered from DevicePanel's IRTCC branch (2243 has
   // no annunciation section), so registerConfig is always
   // TransformerRegisterConfig at runtime here - cast since SubDevice's
@@ -49,6 +52,7 @@ export function DevicePanelSettingsDrawer({
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-surface-500 mb-3">Annunciation</p>
+          <fieldset disabled={!canControl} className="min-w-0">
           <AnnunciationPanel
             trId={trId}
             deviceId={device.id}
@@ -64,6 +68,7 @@ export function DevicePanelSettingsDrawer({
             muteVisible={readings.muteVisible}
             unavailable={unavailable}
           />
+          </fieldset>
         </div>
       </div>
     </div>
