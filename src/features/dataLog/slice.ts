@@ -9,6 +9,9 @@ export interface DataLogDevice {
   id: string;
   name: string;
   deviceType: 'IRTCC' | 'DEVICE_2243';
+  // Newest stored reading (null = nothing stored) - used to hide empty
+  // leftovers from older setups and to label the ones that have history.
+  lastReadingAt: string | null;
 }
 
 export interface DataLogGateway {

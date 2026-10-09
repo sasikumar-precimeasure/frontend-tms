@@ -21,6 +21,7 @@ const PERMISSION_MENUS = [
   'Roles',
   'Audit Log',
   'Data Log',
+  'Monthly Report',
 ] as const;
 
 interface PermissionState {

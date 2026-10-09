@@ -9,10 +9,13 @@ import { RegisterMapCard } from '../components/RegisterMapCard';
 import { AvrSettingsCard } from '../components/AvrSettingsCard';
 import { MailConfigurationCard } from '../components/MailConfigurationCard';
 import { MonthlyReportCard } from '../components/MonthlyReportCard';
+import { useHasMenuPermission } from '../../../shared/hooks/usePermissions';
 import { selectTr, addTransformer, removeTransformer, renameTransformer, addGateway, disconnectGatewayAsync } from '../slice';
 
 const SettingsPage = () => {
   const dispatch = useAppDispatch();
+  // Monthly Report has its own permission (Super Admin only by default).
+  const canSeeMonthlyReport = useHasMenuPermission('Monthly Report');
   const { selectedTrId, transformers } = useAppSelector((state) => state.connectionSettings);
   const firstAllowedSection = useFirstAllowedSettingsSection();
   const [section, setSection] = useState<SettingsSection | null>(firstAllowedSection);
@@ -105,7 +108,7 @@ const SettingsPage = () => {
           {section === 'Mail Configuration' ? (
             <div className="space-y-4">
               <MailConfigurationCard />
-              <MonthlyReportCard />
+              {canSeeMonthlyReport && <MonthlyReportCard />}
             </div>
           ) : selectedTr ? (
             section === 'AVR Settings' ? (

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../../app/store/hooks';
 import { fetchDataLogTopologyAsync, fetchDataLogPageAsync, exportDataLogAsync } from '../slice';
 import type { IrtccDataLogRow, Device2243DataLogRow, PagedDataLog } from '../slice';
+import { buildDeviceOptions, formatShortDate, groupTransformers } from '../transformerGroups';
 
 const PAGE_SIZE = 25;
 
@@ -74,18 +75,11 @@ export function DataLogPage() {
   const topologyLoaded = useAppSelector((state) => state.dataLog.topologyLoaded);
   const configuredTransformers = useAppSelector((state) => state.connectionSettings.transformers);
 
-  // The backend keeps every transformer any browser has ever pushed, so
-  // earlier setups (or another browser's settings) leave same-named entries
-  // behind - e.g. four "TR1 7.5 MVA", only one of which still gets data.
-  // List the transformers configured in this browser first (in Settings
-  // order) and everything else separately as "old", so the default and the
-  // obvious choice are the ones actually receiving readings.
-  const { currentTransformers, oldTransformers } = useMemo(() => {
-    const backendById = new Map(transformers.map((tr) => [tr.id, tr]));
-    const current = configuredTransformers.flatMap((tr) => backendById.get(tr.id) ?? []);
-    const currentIds = new Set(current.map((tr) => tr.id));
-    return { currentTransformers: current, oldTransformers: transformers.filter((tr) => !currentIds.has(tr.id)) };
-  }, [transformers, configuredTransformers]);
+  // One entry per transformer - see groupTransformers.
+  const transformerGroups = useMemo(
+    () => groupTransformers(transformers, configuredTransformers.map((tr) => tr.id)),
+    [transformers, configuredTransformers]
+  );
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedTrId, setSelectedTrId] = useState('');
@@ -106,20 +100,19 @@ export function DataLogPage() {
       .catch(() => setLoadError('Could not load transformers - is the backend reachable, and do you have the "Data Log" permission?'));
   }, [dispatch]);
 
-  const selectedTr = transformers.find((tr) => tr.id === selectedTrId);
-  const deviceOptions = useMemo(
-    () => selectedTr?.gateways.flatMap((gw) => gw.devices.map((d) => ({ ...d, gatewayName: gw.name }))) ?? [],
-    [selectedTr]
-  );
+  const selectedGroup = transformerGroups.find((group) => group.key === selectedTrId);
+  const deviceOptions = useMemo(() => buildDeviceOptions(selectedGroup), [selectedGroup]);
+  const currentDeviceOptions = deviceOptions.filter((d) => !d.isOld);
+  const oldDeviceOptions = deviceOptions.filter((d) => d.isOld);
   const selectedDevice = deviceOptions.find((d) => d.id === selectedDeviceId);
 
   // Auto-select the first transformer/device once the topology loads, so
   // the screen isn't just an empty shell on first visit.
   const [autoSelected, setAutoSelected] = useState(false);
   if (topologyLoaded && !autoSelected) {
-    const first = currentTransformers[0] ?? oldTransformers[0];
+    const first = transformerGroups[0];
     if (first && selectedTrId === '') {
-      setSelectedTrId(first.id);
+      setSelectedTrId(first.key);
     }
     setAutoSelected(true);
   }
@@ -166,7 +159,7 @@ export function DataLogPage() {
   const [prevSelectedTrId, setPrevSelectedTrId] = useState(selectedTrId);
   if (prevSelectedTrId !== selectedTrId) {
     setPrevSelectedTrId(selectedTrId);
-    const firstDevice = transformers.find((tr) => tr.id === selectedTrId)?.gateways.flatMap((gw) => gw.devices)[0];
+    const firstDevice = buildDeviceOptions(transformerGroups.find((group) => group.key === selectedTrId))[0];
     setSelectedDeviceId(firstDevice?.id ?? '');
     setPage(1);
     setResult(null);
@@ -310,22 +303,26 @@ export function DataLogPage() {
                 className="px-2.5 py-1.5 text-sm border border-surface-300 rounded-md bg-surface-0 min-w-[180px] focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
               >
                 <option value="">Select a transformer…</option>
-                {currentTransformers.length > 0 && (
+                {transformerGroups.some((g) => g.isCurrent) && (
                   <optgroup label="Configured in Settings">
-                    {currentTransformers.map((tr) => (
-                      <option key={tr.id} value={tr.id}>
-                        {tr.name}
-                      </option>
-                    ))}
+                    {transformerGroups
+                      .filter((g) => g.isCurrent)
+                      .map((g) => (
+                        <option key={g.key} value={g.key}>
+                          {g.name}
+                        </option>
+                      ))}
                   </optgroup>
                 )}
-                {oldTransformers.length > 0 && (
-                  <optgroup label="Older setups (no longer in Settings)">
-                    {oldTransformers.map((tr) => (
-                      <option key={tr.id} value={tr.id}>
-                        {tr.name} (old)
-                      </option>
-                    ))}
+                {transformerGroups.some((g) => !g.isCurrent) && (
+                  <optgroup label="No longer in Settings">
+                    {transformerGroups
+                      .filter((g) => !g.isCurrent)
+                      .map((g) => (
+                        <option key={g.key} value={g.key}>
+                          {g.name} (old)
+                        </option>
+                      ))}
                   </optgroup>
                 )}
               </select>
@@ -339,11 +336,24 @@ export function DataLogPage() {
                 className="px-2.5 py-1.5 text-sm border border-surface-300 rounded-md bg-surface-0 min-w-[200px] focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50"
               >
                 <option value="">Select a device…</option>
-                {deviceOptions.map((device) => (
-                  <option key={device.id} value={device.id}>
-                    {device.gatewayName} — {device.name}
-                  </option>
-                ))}
+                {currentDeviceOptions.length > 0 && (
+                  <optgroup label="Current devices">
+                    {currentDeviceOptions.map((device) => (
+                      <option key={device.id} value={device.id}>
+                        {device.gatewayName} — {device.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {oldDeviceOptions.length > 0 && (
+                  <optgroup label="Old devices (earlier setups)">
+                    {oldDeviceOptions.map((device) => (
+                      <option key={device.id} value={device.id}>
+                        {device.gatewayName} — {device.name} (old · last data {formatShortDate(device.lastReadingAt)})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </div>
             <div>

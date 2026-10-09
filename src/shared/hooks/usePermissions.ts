@@ -10,7 +10,8 @@ export type PermissionMenu =
   | 'Users'
   | 'Roles'
   | 'Audit Log'
-  | 'Data Log';
+  | 'Data Log'
+  | 'Monthly Report';
 
 // A menu is "readable" if the user's role grants read OR write on it (write
 // implies the ability to see the screen to write to it) - mirrors the
