@@ -45,6 +45,11 @@ export interface Gateway {
   // the watcher never connects behind the user's back to a half-typed or
   // stale address. Absent on settings saved before this existed (= true).
   autoReconnect?: boolean;
+  // Name of the RS485 bus this gateway's converter is wired to, when it
+  // shares that bus with other converters (e.g. "Bus A"). Gateways with the
+  // same name are never polled at the same time - see RS485Bus in the
+  // gateway server. Empty/absent = its own bus.
+  busGroup?: string;
   subDevices: SubDevice[];
 }
 

@@ -4,6 +4,7 @@ import {
   connectGatewayAsync,
   disconnectGatewayAsync,
   updateGatewayConnection,
+  updateGatewayBusGroup,
   clearGatewayError,
   addSubDevice,
   removeSubDevice,
@@ -33,6 +34,18 @@ interface GatewayConnectionCardProps {
 export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCardProps) => {
   const dispatch = useAppDispatch();
   const recipients = useAppSelector((state) => state.mailSettings.recipients);
+  const transformers = useAppSelector((state) => state.connectionSettings.transformers);
+
+  // Other gateways on the same named RS485 bus - shown so it's obvious which
+  // converters will take turns with this one.
+  const busName = (gateway.busGroup ?? '').trim();
+  const allGateways = transformers.flatMap((tr) => tr.gateways.map((gw) => ({ tr, gw })));
+  const busMates = busName
+    ? allGateways.filter(
+        ({ gw }) => gw.id !== gateway.id && (gw.busGroup ?? '').trim().toLowerCase() === busName.toLowerCase()
+      )
+    : [];
+  const knownBusNames = [...new Set(allGateways.map(({ gw }) => (gw.busGroup ?? '').trim()).filter(Boolean))];
 
   const handleConnectToggle = () => {
     if (gateway.isConnected) {
@@ -45,6 +58,7 @@ export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCa
           clientId: gateway.clientId,
           ipAddress: gateway.ipAddress,
           port: gateway.port,
+          busGroup: gateway.busGroup,
         })
       );
     }
@@ -103,6 +117,28 @@ export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCa
           />
         </div>
 
+        <div className="flex items-center gap-1.5">
+          <label
+            className="text-xs font-medium text-surface-500"
+            title="Only if this converter is wired to the same RS485 line as another converter: give both the same name (e.g. Bus A) so they are never polled at the same time. Leave empty otherwise."
+          >
+            Shared RS485 bus
+          </label>
+          <input
+            value={gateway.busGroup ?? ''}
+            onChange={(e) => dispatch(updateGatewayBusGroup({ trId, gatewayId: gateway.id, busGroup: e.target.value }))}
+            disabled={gateway.isConnected}
+            placeholder="none"
+            list={`bus-names-${gateway.id}`}
+            className="px-2 py-1 text-sm border border-surface-300 rounded-md w-24 disabled:bg-surface-100 disabled:text-surface-400"
+          />
+          <datalist id={`bus-names-${gateway.id}`}>
+            {knownBusNames.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+        </div>
+
         <button
           onClick={handleConnectToggle}
           disabled={gateway.isConnecting}
@@ -126,6 +162,24 @@ export const TransformerConnectionCard = ({ trId, gateway }: GatewayConnectionCa
           Remove gateway
         </button>
       </div>
+
+      {busName && (
+        <p className="mx-4 mt-3 text-xs text-surface-500">
+          On RS485 bus <span className="font-semibold text-surface-700">{busName}</span>
+          {busMates.length > 0 ? (
+            <>
+              {' '}- takes turns with{' '}
+              <span className="font-medium text-surface-700">
+                {busMates.map(({ tr, gw }) => `${tr.name} / ${gw.name} (${gw.ipAddress || 'no IP'})`).join(', ')}
+              </span>
+              , so only one request is on the wires at a time.
+            </>
+          ) : (
+            ' - no other gateway uses this bus name yet. Give the converter it shares wires with the same name.'
+          )}
+          {gateway.isConnected && ' Disconnect to change it.'}
+        </p>
+      )}
 
       {gateway.errorMessage && (
         <div className="mx-4 mt-3 px-3 py-2 rounded-md bg-status-critical-soft flex items-start justify-between gap-2">

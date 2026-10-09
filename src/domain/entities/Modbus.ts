@@ -15,6 +15,7 @@ export interface ModbusConnectRequest {
   clientId: number;
   ipAddress: string;
   port: number;
+  busGroup?: string;
 }
 
 export interface ModbusDisconnectRequest {

@@ -69,6 +69,38 @@ function getExceptionMessage(code: number): string {
   }
 }
 
+// Pause between transactions on a shared RS485 bus, giving the converter
+// that just finished time to release the line before the next one sends.
+const BUS_TURNAROUND_MS = 20;
+
+// An RS485 bus that more than one TCP converter is wired to. RS485 allows
+// only one master at a time - if two converters on the same wires send at
+// the same moment, the frames collide and both requests time out (and each
+// converter may hand back the other one's traffic). Every ModbusClient
+// attached to the same RS485Bus runs its transactions through here, so only
+// one request is ever on the wires at a time, whichever converter it uses.
+export class RS485Bus {
+  private chain: Promise<unknown> = Promise.resolve();
+  private _waiting = 0;
+
+  constructor(readonly name: string) {}
+
+  // Requests queued or running on this bus right now.
+  get waiting(): number {
+    return this._waiting;
+  }
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    this._waiting += 1;
+    const result = this.chain.then(task, task).finally(() => {
+      this._waiting -= 1;
+    });
+    const pause = () => new Promise<void>((resolve) => setTimeout(resolve, BUS_TURNAROUND_MS));
+    this.chain = result.then(pause, pause);
+    return result;
+  }
+}
+
 interface PendingTransaction {
   resolve: (frame: Buffer) => void;
   reject: (err: Error) => void;
@@ -132,13 +164,16 @@ export class ModbusClient {
   // number means polls arrive faster than the device answers.
   private _queueDepth = 0;
   private _connectedAt: number | null = null;
+  private _bus: RS485Bus | null = null;
   private _lastError: { message: string; at: string } | null = null;
   private readonly _total = emptyCounters();
   private _window = emptyCounters();
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
     this._queueDepth += 1;
-    const tracked = () => task().finally(() => {
+    // Per-connection order first, then - if this converter shares its RS485
+    // bus with others - wait for the bus to be free too.
+    const tracked = () => (this._bus ? this._bus.run(task) : task()).finally(() => {
       this._queueDepth -= 1;
     });
     const result = this._requestQueue.then(tracked, tracked);
@@ -180,6 +215,37 @@ export class ModbusClient {
     return `${this._ipAddress}:${this._port}`;
   }
 
+  get bus(): RS485Bus | null {
+    return this._bus;
+  }
+
+  setBus(bus: RS485Bus | null): void {
+    if (bus === this._bus) return;
+    logger.info('modbus', bus ? 'Joined shared RS485 bus' : 'Left shared RS485 bus', {
+      conn: this._clientId, endpoint: this.endpoint, bus: (bus ?? this._bus)?.name,
+    });
+    this._bus = bus;
+  }
+
+  // A reply must come from the slave that was asked, for the function that
+  // was asked. A converter sharing its RS485 bus with another master can
+  // pass on the other master's traffic - seen in the field as "slave 44"
+  // arriving in reply to a request for slave 33. Unit IDs 0 and 255 are
+  // accepted since some devices answer with those regardless.
+  private checkReplySource(frame: Buffer, slaveId: number, fc: number, label: string): void {
+    const replyUnit = frame[6];
+    const replyFc = frame[7] & 0x7f;
+    if ((replyUnit === slaveId || replyUnit === 0 || replyUnit === 255) && replyFc === fc) return;
+    const message = `${label}: Reply came from slave ${replyUnit} (function ${replyFc}) instead of slave ${slaveId} - is another master on the RS485 bus?`;
+    this.count('otherErrors');
+    this.noteError(message);
+    logger.warn('modbus', 'Reply from the wrong slave/function - discarded', {
+      conn: this._clientId, endpoint: this.endpoint, askedSlave: slaveId, askedFc: fc, replySlave: replyUnit, replyFc,
+      bus: this._bus?.name, bytes: toHex(frame.subarray(0, 32)),
+    });
+    throw new Error(message);
+  }
+
   private count(key: keyof ConnectionCounters, amount = 1): void {
     this._total[key] += amount;
     this._window[key] += amount;
@@ -207,6 +273,7 @@ export class ModbusClient {
       uptimeSec: this._connectedAt ? Math.round((Date.now() - this._connectedAt) / 1000) : 0,
       queueDepth: this._queueDepth,
       inFlight: this._pending.size,
+      bus: this._bus ? { name: this._bus.name, waiting: this._bus.waiting } : null,
       consecutiveTimeouts: this._consecutiveTimeouts,
       lastError: this._lastError,
       window,
@@ -576,6 +643,7 @@ export class ModbusClient {
     }
 
     const frame = await this.transact(tid, request, READ_TIMEOUT_MS, 'Read', slaveId);
+    this.checkReplySource(frame, slaveId, 0x03, 'Read');
 
     // Check for exception response
     if ((frame[7] & 0x80) === 0x80) {
@@ -639,6 +707,7 @@ export class ModbusClient {
     logger.info('modbus', 'FC06 write', { conn: this._clientId, endpoint: this.endpoint, tid, slave: slaveId, address, value });
 
     const frame = await this.transact(tid, request, WRITE_TIMEOUT_MS, 'Write', slaveId);
+    this.checkReplySource(frame, slaveId, 0x06, 'Write');
 
     if ((frame[7] & 0x80) === 0x80) {
       const message = `Write FC06 Exception: ${getExceptionMessage(frame[8])}`;

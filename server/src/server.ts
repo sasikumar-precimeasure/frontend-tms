@@ -2,7 +2,7 @@ import express from 'express';
 import type { Request } from 'express';
 import cors from 'cors';
 import { execFileSync } from 'child_process';
-import { ModbusClient } from './ModbusClient';
+import { ModbusClient, RS485Bus } from './ModbusClient';
 import type { ModbusStatus } from './ModbusClient';
 import { logger } from './logger';
 
@@ -72,6 +72,23 @@ interface Endpoint {
 }
 
 const endpoints = new Map<string, Endpoint>();
+
+// Shared RS485 buses by name (case-insensitive), from each gateway's
+// "Shared RS485 bus" setting in the UI. Converters given the same bus name
+// take turns - see RS485Bus.
+const buses = new Map<string, RS485Bus>();
+
+function busFor(name: string | undefined): RS485Bus | null {
+  const trimmed = (name ?? '').trim();
+  if (trimmed === '') return null;
+  const key = trimmed.toLowerCase();
+  let bus = buses.get(key);
+  if (!bus) {
+    bus = new RS485Bus(trimmed);
+    buses.set(key, bus);
+  }
+  return bus;
+}
 // A binding is one UI gateway in one browser tab: `${instanceId}:${clientId}`.
 // clientIds are only unique within one tab's saved settings - two tabs (or a
 // stale tab still holding older settings) both use clientId 2 for their own
@@ -178,6 +195,7 @@ setInterval(() => {
       connected: stats.connected,
       uptimeSec: stats.uptimeSec,
       sharedBy: stats.bindings.length,
+      bus: stats.bus ? `${stats.bus.name} (${stats.bus.waiting} waiting)` : undefined,
       last30s: `${w.ok}/${w.requests} ok, ${w.timeouts} timeouts, ${w.exceptions} exceptions, ${w.otherErrors} errors, ${w.drops} drops`,
       avgLatencyMs: w.ok ? Math.round(w.latencySumMs / w.ok) : undefined,
       maxLatencyMs: w.latencyMaxMs || undefined,
@@ -202,13 +220,15 @@ function toConnectionPayload(clientId: number, client: ModbusClient | null, erro
 
 // POST /api/modbus/connect  { clientId, ipAddress, port }
 app.post('/api/modbus/connect', async (req, res) => {
-  const { clientId, ipAddress, port } = req.body as {
+  const { clientId, ipAddress, port, busGroup } = req.body as {
     clientId: number;
     ipAddress: string;
     port: number;
+    busGroup?: string;
   };
 
   const client = acquireEndpoint(bindingFor(req, clientId), ipAddress, port);
+  client.setBus(busFor(busGroup));
   let lastError: string | null = null;
   const offError = client.onErrorOccurred((event) => {
     lastError = event.errorMsg;

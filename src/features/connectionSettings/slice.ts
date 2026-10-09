@@ -376,7 +376,7 @@ function findGatewayByClientId(state: ConnectionSettingsState, clientId: number)
 // -- Connect one gateway's own connection -- (mirrors ModbusClient.vb Connect(ipAddress, port))
 export const connectGatewayAsync = createAsyncThunk<
   { trId: string; gatewayId: string; clientId: number; status: string; isConnected: boolean; errorMessage: string | null },
-  { trId: string; gatewayId: string; clientId: number; ipAddress: string; port: number },
+  { trId: string; gatewayId: string; clientId: number; ipAddress: string; port: number; busGroup?: string },
   { extra: Dependencies }
 >('connectionSettings/connectGateway', async (request, { extra, rejectWithValue }) => {
   try {
@@ -385,6 +385,7 @@ export const connectGatewayAsync = createAsyncThunk<
       clientId: request.clientId,
       ipAddress: request.ipAddress,
       port: request.port,
+      busGroup: request.busGroup,
     });
     return {
       trId: request.trId,
@@ -493,6 +494,13 @@ const connectionSettingsSlice = createSlice({
       if (gw) {
         gw.ipAddress = action.payload.ipAddress;
         gw.port = action.payload.port;
+        gw.autoReconnect = false;
+      }
+    },
+    updateGatewayBusGroup: (state, action: PayloadAction<{ trId: string; gatewayId: string; busGroup: string }>) => {
+      const gw = findGateway(state, action.payload.trId, action.payload.gatewayId);
+      if (gw) {
+        gw.busGroup = action.payload.busGroup;
         gw.autoReconnect = false;
       }
     },
@@ -683,6 +691,7 @@ export const {
   removeGateway,
   renameGateway,
   updateGatewayConnection,
+  updateGatewayBusGroup,
   clearGatewayError,
   addSubDevice,
   removeSubDevice,

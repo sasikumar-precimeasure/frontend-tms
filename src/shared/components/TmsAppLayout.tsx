@@ -142,7 +142,7 @@ export const TmsAppLayout = () => {
     gatewayEntries
       .filter(({ gw }) => gw.ipAddress.trim() !== '' && !gw.isConnected && gw.autoReconnect !== false)
       .forEach(({ trId, gw }) => {
-        dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port }));
+        dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port, busGroup: gw.busGroup }));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -190,7 +190,7 @@ export const TmsAppLayout = () => {
 
         entry.attempts += 1;
         entry.nextAttemptAt = now + Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** entry.attempts);
-        dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port }));
+        dispatch(connectGatewayAsync({ trId, gatewayId: gw.id, clientId: gw.clientId, ipAddress: gw.ipAddress, port: gw.port, busGroup: gw.busGroup }));
       }
     }, RECONNECT_CHECK_MS);
     return () => clearInterval(intervalId);
