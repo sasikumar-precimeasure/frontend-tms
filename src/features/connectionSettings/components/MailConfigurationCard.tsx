@@ -333,12 +333,15 @@ function DeviceThresholdsRow({
   deviceId,
   label,
   thresholds,
+  temperatureOnly,
 }: {
   trId: string;
   gatewayId: string;
   deviceId: string;
   label: string;
   thresholds: MailThresholds;
+  // A 2243 has no AVR or tap position - only its OTI/WTI are checked.
+  temperatureOnly: boolean;
 }) {
   const dispatch = useAppDispatch();
   const [draft, setDraft] = useState<MailThresholds>(thresholds);
@@ -380,10 +383,14 @@ function DeviceThresholdsRow({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         {field('otiTempHigh', 'OTI High', '°C')}
         {field('wtiTempHigh', 'WTI High', '°C')}
-        {field('avrHigh', 'AVR High', '%')}
-        {field('avrLow', 'AVR Low', '%')}
-        {field('tapHigh', 'Tap High', '')}
-        {field('tapLow', 'Tap Low', '')}
+        {!temperatureOnly && (
+          <>
+            {field('avrHigh', 'AVR High', '%')}
+            {field('avrLow', 'AVR Low', '%')}
+            {field('tapHigh', 'Tap High', '')}
+            {field('tapLow', 'Tap Low', '')}
+          </>
+        )}
         {field('mailTimeMinutes', 'Re-alert Every', 'min')}
       </div>
       {error && <p className="mt-1 text-[11px] text-status-critical">{error}</p>}
@@ -527,6 +534,7 @@ export function MailConfigurationCard() {
                   deviceId={device.id}
                   label={`${tr.name} — ${gw.name} — ${device.name}`}
                   thresholds={device.mailThresholds}
+                  temperatureOnly={device.deviceType === '2243'}
                 />
               ))
             )
